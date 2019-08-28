@@ -1,66 +1,52 @@
-import torch
 import numpy as np
 import cv2
 import pickle
 import torchsummary
 import matplotlib.pyplot as plt
-import torch.nn.functional as F
-from torch import nn
 from torch.utils.data import DataLoader
 from torch import optim
-from utils import BGR_PIXEL_MEANS, PascalDatasetYOLO, jaccard, xywh2xyxy
+from time import time
+from utils import BGR_PIXEL_MEANS, PRINT_LINE_LEN, NUM_WORKERS, PascalDatasetYOLO, jaccard, xywh2xyxy
 from layers import *
 
 
 class YOLOv2tiny(nn.Module):
 
-    def __init__(self, model, num_classes, grid_size, device='cuda', batch_size=10):
+    def __init__(self, model, device='cuda'):
 
         super(YOLOv2tiny, self).__init__()
 
-        self.device = device
-        self.batch_size = batch_size
-        self.num_classes = num_classes
-        self.num_features = 5 + self.num_classes
+        self.net_info = {}
         self.layers = nn.ModuleList()
         self.blocks = []
-        self.net_info = {}
-
-        self.grid_size = grid_size
+        self.detection_layers = []
+        self.device = device
 
         self.parse_cfg(model)
+
+        self.num_classes = int(self.blocks[-1]['classes'])
+        self.num_features = 5 + self.num_classes
+        self.image_size = int(self.net_info['width']), int(self.net_info['height'])
+        self.downscale_factor = self.get_downscale_factor()
+        self.grid_size = self.get_grid_size()
+
         self.build_modules()
 
-        self.downscale_factor = 32
-
-        # self.channels = [3, 16, 32, 64, 128, 256]
-        # self.layers = nn.ModuleList()
-        # for in_c, out_c in zip(self.channels, self.channels[1:]):
-        #     self.layers.append(conv_layer(in_channels=in_c, out_channels=out_c))
-        #     self.layers.append(nn.MaxPool2d(kernel_size=2, stride=2, padding=0))
-        # self.channels.append(512)
-        # self.layers.append(conv_layer(in_channels=self.channels[-2], out_channels=self.channels[-1]))
-        # self.layers.append(nn.ReplicationPad2d(padding=(0, 1, 0, 1)))
-        # self.layers.append(nn.MaxPool2d(kernel_size=2, stride=1))
-        # self.channels.append(1024)
-        # self.layers.append(conv_layer(in_channels=self.channels[-2], out_channels=self.channels[-1]))
-        # self.channels.append(512)
-        # self.layers.append(conv_layer(in_channels=self.channels[-2], out_channels=self.channels[-1]))
-        # self.channels.append(self.num_anchors * (5 + self.num_classes))
-        # self.layers.append(nn.Conv2d(in_channels=self.channels[-2], out_channels=self.channels[-1], kernel_size=1))
+        self.anchors = self.get_anchors()
 
     def forward(self, x):
         for layer in self.layers:
             x = layer(x)
         return x
 
-    def loss(self, predictions, targets, anchors):
+    def loss(self, predictions, targets):
 
         assert predictions.shape == targets.shape
 
         batch_size = targets.shape[0]
 
-        lambda_coord = 10.
+        lambda_coord = 5.
+        lambda_obj = 2.
         lambda_noobj = 0.2
 
         loss = {}
@@ -76,7 +62,7 @@ class YOLOv2tiny(nn.Module):
 
         if obj_mask.numel() > 0:
             # Convert t_w and t_h --> w and h.
-            anchors = anchors.repeat(batch_size * self.grid_size[0] * self.grid_size[1], 1)
+            anchors = self.anchors.repeat(batch_size * self.grid_size[0] * self.grid_size[1], 1)
 
             predictions_xyxy = xywh2xyxy(predictions[:, 1:5])
             targets_xyxy = xywh2xyxy(targets[obj_mask, 1:5])
@@ -84,7 +70,7 @@ class YOLOv2tiny(nn.Module):
             ious = jaccard(predictions_xyxy, targets_xyxy)
             ious, _ = torch.max(ious, dim=1)
 
-            loss['object'] = nn.MSELoss(reduction='sum')(predictions[obj_mask, 0], ious[obj_mask])
+            loss['object'] = lambda_obj * nn.MSELoss(reduction='sum')(predictions[obj_mask, 0], ious[obj_mask])
             loss['coord'] = nn.MSELoss(reduction='sum')(predictions[obj_mask, 1], targets[obj_mask, 1])
             loss['coord'] += nn.MSELoss(reduction='sum')(predictions[obj_mask, 2], targets[obj_mask, 2])
             loss['coord'] += nn.MSELoss(reduction='sum')(torch.sqrt(predictions[obj_mask, 3]), torch.sqrt(targets[obj_mask, 3]))
@@ -117,23 +103,27 @@ class YOLOv2tiny(nn.Module):
 
         return loss
 
-    def fit(self, train_data, optimizer, batch_size=1, epochs=1, verbose=True, val_data=None, shuffle=True, multi_scale=True, checkpoint_frequency=100):
+    def fit(self, train_data, optimizer, batch_size=1, epochs=1, verbose=True,
+            val_data=None, shuffle=True, multi_scale=True, checkpoint_frequency=100):
+
         self.train()
 
         train_dataloader = DataLoader(dataset=train_data,
                                       batch_size=batch_size,
                                       shuffle=shuffle,
-                                      num_workers=0)
+                                      num_workers=NUM_WORKERS)
 
         train_loss = []
         val_loss = []
 
         for epoch in range(1, epochs + 1):
             batch_loss = []
+            start = time()
             if multi_scale:
                 random_size = np.random.randint(10, 20) * self.downscale_factor
                 train_data.set_image_size(*[random_size] * 2)
                 train_data.set_grid_size(*[int(random_size / self.downscale_factor)] * 2)
+                self.set_image_size(*train_data.image_size)
                 self.set_grid_size(*train_data.grid_size)
             for i, (images, targets) in enumerate(train_dataloader, 1):
                 # image = images[0].permute(1, 2, 0).numpy()
@@ -145,52 +135,67 @@ class YOLOv2tiny(nn.Module):
                 targets = targets.to(self.device)
                 optimizer.zero_grad()
                 predictions = self(images)
-                loss = self.loss(predictions, targets, self.layers[-1][0].anchors)
+                loss = self.loss(predictions, targets)
                 batch_loss.append(loss['total'].item())
                 loss['total'].backward()
                 optimizer.step()
                 if verbose:
-                    line_len = 52
-                    ii = int(i / len(train_dataloader) * line_len)
+                    ii = int(i / len(train_dataloader) * PRINT_LINE_LEN)
                     progress = '=' * ii
                     progress += '>'
-                    progress += ' ' * (line_len - ii)
-                    print('\rEpoch: [{}/{}] |{}| [{}/{}] Training Loss: {:.6f}'.format(epoch, epochs, progress, i, len(train_dataloader), np.mean(batch_loss)), end='')
+                    progress += ' ' * (PRINT_LINE_LEN - ii)
+                    string = 'Epoch: [{}/{}] |{}| [{}/{}] Training Loss: {:.6f}'.format(epoch, epochs, progress, i,
+                                                                                        len(train_dataloader),
+                                                                                        np.mean(batch_loss))
+                    print('\r' + string, end='')
             train_loss.append(np.mean(batch_loss))
-            progress = '=' * line_len
+            progress = '=' * (PRINT_LINE_LEN + 1)
             if val_data is not None:
                 self.set_grid_size(13, 13)
                 val_loss.append(self.calculate_loss(val_data, batch_size))
-                print('\rEpoch: [{}/{}] |{}| [{}/{}] Training Loss: {:.6f} Validation Loss: {:.6f}'.format(epoch, epochs, progress, i, len(train_dataloader), train_loss[-1], val_loss[-1]), end='\n')
+                end = time()
+                string = 'Epoch: [{}/{}] |{}| [{}/{}] '.format(epoch, epochs, progress, i, len(train_dataloader))
+                string += 'Training Loss: {:.6f} Validation Loss: {:.6f} Duration: {:.1f}s'.format(train_loss[-1],
+                                                                                                   val_loss[-1],
+                                                                                                   end - start)
             else:
-                print('\rEpoch: [{}/{}] |{}| [{}/{}] Training Loss: {:.6f} Validation Loss: N/A'.format(epoch, epochs, progress, i, len(train_dataloader), train_loss[-1]), end='\n')
+                end = time()
+                string = 'Epoch: [{}/{}] |{}| [{}/{}] '.format(epoch, epochs, progress, i, len(train_dataloader))
+                string += 'Training Loss: {:.6f} Validation Loss: N/A Duration: {:.1f}s'.format(train_loss[-1],
+                                                                                                val_loss[-1],
+                                                                                                end - start)
+            print('\r' + string, end='\n')
             if epoch % checkpoint_frequency == 0:
-                self.save_model('yolo_{}_leaky.pkl'.format(epoch))
+                self.save_model('yolov2_tiny_{}.pkl'.format(epoch))
 
         return train_loss, val_loss
 
     def set_grid_size(self, x, y):
         self.grid_size = x, y
-        for layer in self.layers:
-            if hasattr(layer, 'grid_size'):
-                layer.grid_size = x, y
+        for layer in self.detection_layers:
+            layer.grid_size = x, y
+
+    def set_image_size(self, x, y):
+        self.image_size = x, y
 
     def save_model(self, name):
         pickle.dump(self, open(name, 'wb'), protocol=pickle.HIGHEST_PROTOCOL)
 
-    def calculate_loss(self, data, batch_size):
+    def calculate_loss(self, data, batch_size, fraction=0.2):
         val_dataloader = DataLoader(dataset=data,
                                     batch_size=batch_size,
-                                    shuffle=False,
-                                    num_workers=0)
+                                    shuffle=True,
+                                    num_workers=NUM_WORKERS)
         losses = []
         with torch.no_grad():
-            for images, targets in val_dataloader:
+            for i, (images, targets) in enumerate(val_dataloader, 1):
                 images = images.to(self.device)
                 targets = targets.to(self.device)
                 predictions = self(images)
-                loss = self.loss(predictions, targets, self.layers[-1][0].anchors)
+                loss = self.loss(predictions, targets)
                 losses.append(loss['total'].item())
+                if i > len(val_dataloader) * fraction:
+                    break
 
         return np.mean(losses)
 
@@ -215,18 +220,19 @@ class YOLOv2tiny(nn.Module):
                 block[key.rstrip()] = value.lstrip()
         self.blocks.append(block)
 
+        self.net_info = self.blocks[0]
+        self.blocks = self.blocks[1:]
+
         return self.blocks
 
     def build_modules(self):
-        self.net_info = self.blocks[0]  # Captures the information about the input and pre-processing
-
         self.layers = nn.ModuleList()
 
         index = 0  # indexing blocks helps with implementing route  layers (skip connections)
         prev_filters = 3
         output_filters = []
 
-        for block in self.blocks[1:]:
+        for block in self.blocks:
             module = nn.Sequential()
 
             # If it's a convolutional layer
@@ -321,12 +327,15 @@ class YOLOv2tiny(nn.Module):
                 mask = block['mask'].split(',')
                 mask = [int(x) for x in mask]
 
+                width, height = self.image_size
                 anchors = block['anchors'].split(',')
                 anchors = [int(anchor) for anchor in anchors]
-                anchors = [(anchors[i] / int(self.net_info['width']), anchors[i + 1] / int(self.net_info['height'])) for i in range(0, len(anchors), 2)]
+                anchors = [(anchors[i] / width, anchors[i + 1] / height)
+                           for i in range(0, len(anchors), 2)]
                 anchors = [anchors[i] for i in mask]
 
                 detection_layer = YOLOv3Layer(self, anchors)
+                self.detection_layers.append(detection_layer)
                 module.add_module('detection_{}'.format(index), detection_layer)
 
             elif block['type'] == 'region':
@@ -335,6 +344,7 @@ class YOLOv2tiny(nn.Module):
                            for i in range(0, len(anchors), 2)]
 
                 detection_layer = YOLOv2Layer(self, anchors)
+                self.detection_layers.append(detection_layer)
                 module.add_module('detection_{}'.format(index), detection_layer)
 
             else:
@@ -433,55 +443,64 @@ class YOLOv2tiny(nn.Module):
                 conv_weights = conv_weights.view_as(conv.weight.data)
                 conv.weight.data.copy_(conv_weights)
 
+    def get_downscale_factor(self):
+        downscale_factor = 1.
+        for block in self.blocks:
+            if block['type'] == 'maxpool':
+                size = int(block['size'])
+                stride = int(block['stride'])
+                div = (1. - size) / stride + 1.
+                if div > 0:
+                    downscale_factor /= div
+        return int(downscale_factor)
+
+    def get_anchors(self):
+        anchors = []
+        for layer in self.detection_layers:
+            anchors.append(layer.anchors)
+        return torch.cat(anchors)
+
+    def get_grid_size(self):
+        width, height = self.image_size
+
+        assert width % self.downscale_factor == 0
+        assert height % self.downscale_factor == 0
+
+        return int(width / self.downscale_factor), int(height / self.downscale_factor)
+
 
 def main():
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
-    grid_size = (13, 13)
-    anchors = [0.57273,0.677385, 1.87446,2.06253, 3.33843,5.47434, 7.88282,3.52778, 9.77052,9.16828]
-    anchors = tuple([(anchors[i] / grid_size[0], anchors[i + 1] / grid_size[1]) for i in range(0, len(anchors), 2)])
-    # anchors = ((0.3, 0.3), (0.2, 0.6), (0.6, 0.2), (0.3, 0.8))
-    classes = ['bicycle']#, 'person', 'car']
-    image_size = (416, 416)
-    batch_size = 10
-
-    train_data = PascalDatasetYOLO(root_dir='../data/VOC2012/',
-                                   classes=classes,#, 'car', 'cat', 'person', 'train', 'tvmonitor'],
-                                   dataset='train',
-                                   skip_truncated=False,
-                                   skip_difficult=False,
-                                   image_size=image_size,
-                                   grid_size=grid_size,
-                                   anchors=anchors
-                                   )
-
-    val_data = PascalDatasetYOLO(root_dir='../data/VOC2012/',
-                                 classes=classes,#, 'car', 'cat', 'person', 'train', 'tvmonitor'],
-                                 dataset='val',
-                                 skip_truncated=False,
-                                 skip_difficult=False,
-                                 image_size=image_size,
-                                 grid_size=grid_size,
-                                 anchors=anchors
-                                 )
-
-    dataloader = DataLoader(dataset=val_data,
-                            batch_size=batch_size,
-                            shuffle=True,
-                            num_workers=0)
-
     torch.random.manual_seed(12345)
     np.random.seed(12345)
 
-    model = YOLOv2tiny(model='models/yolov2-tiny.cfg',
-                       num_classes=len(classes),
-                       grid_size=grid_size,
-                       batch_size=batch_size,
-                       device=device)
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    batch_size = 24
 
+    model = YOLOv2tiny(model='models/yolov2-tiny.cfg',
+                       device=device)
     model = model.to(device)
 
     torchsummary.summary(model, (3, 416, 416))
+
+    train_data = PascalDatasetYOLO(root_dir='../data/VOC2012/',
+                                   classes='../data/VOC2012/voc.names',  # , 'car', 'cat', 'person', 'train', 'tvmonitor'],
+                                   dataset='train',
+                                   skip_truncated=False,
+                                   skip_difficult=False,
+                                   image_size=model.image_size,
+                                   grid_size=model.grid_size,
+                                   anchors=model.anchors
+                                   )
+
+    val_data = PascalDatasetYOLO(root_dir='../data/VOC2012/',
+                                 classes='../data/VOC2012/voc.names',
+                                 dataset='val',
+                                 skip_truncated=False,
+                                 skip_difficult=True,
+                                 image_size=model.image_size,
+                                 grid_size=model.grid_size,
+                                 anchors=model.anchors
+                                 )
 
     optimizer = optim.SGD(model.parameters(), lr=1e-4, momentum=0.98)
     # optimizer = optim.Adam(model.parameters())
@@ -492,63 +511,8 @@ def main():
               batch_size=batch_size,
               epochs=500,
               verbose=True,
-              multi_scale=False,
+              multi_scale=True,
               checkpoint_frequency=100)
-
-    # device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    #
-    # anchors = ((0.3, 0.3), (0.2, 0.6), (0.6, 0.2), (0.3, 0.8))
-    # classes = ['bicycle', 'person', 'car']
-    # batch_size = 8
-    #
-    # train_dataset = PascalDatasetYOLO(root_dir='../data/VOC2012/',
-    #                                   classes=classes,  # , 'car', 'cat', 'person', 'train', 'tvmonitor'],
-    #                                   dataset='train',
-    #                                   skip_truncated=False,
-    #                                   skip_difficult=False,
-    #                                   image_size=(416, 416),
-    #                                   grid_size=(13, 13),
-    #                                   anchors=anchors)
-    #
-    # torch.random.manual_seed(12345)
-    # np.random.seed(12345)
-    #
-    # yolo = YOLOv2tiny(dataset=train_dataset,
-    #                   anchors=anchors,
-    #                   batch_size=batch_size,
-    #                   device=device,
-    #                   swish=True)
-    #
-    # yolo = yolo.to(device)
-    # yolo.train()
-    #
-    # torchsummary.summary(yolo, (3, 416, 416))
-    #
-    # optimizer = optim.SGD(yolo.parameters(), lr=5e-5, momentum=0.98)
-    # # optimizer = optim.Adam(yolo.parameters())
-    #
-    # losses = []
-    # n = 2000
-    # for epoch in range(1, n + 1):
-    #     random_size = np.random.randint(10, 20) * 32
-    #     yolo.dataset.image_size = tuple([random_size] * 2)
-    #     yolo.dataset.grid_size = tuple([int(random_size / 32)] * 2)
-    #     yolo.grid_size = yolo.dataset.grid_size
-    #     print(random_size)
-    #     for i, (images, targets) in enumerate(yolo.dataloader, 1):
-    #         images = images.to(device)
-    #         targets = targets.to(device)
-    #         optimizer.zero_grad()
-    #         predictions = yolo(images)
-    #         loss = yolo.loss(predictions, targets)
-    #         losses.append(loss['total'].item())
-    #         loss['total'].backward()
-    #         optimizer.step()
-    #         print('Train Epoch: {} [{}/{}] Loss: {:.6f}'.format(
-    #             epoch, i, int(np.ceil(len(train_dataset) / yolo.batch_size)), np.mean(losses[-5:])))
-    #     if epoch % 1000 == 0:
-    #         pickle.dump(yolo, open('yolo_{}_swish.pkl'.format(epoch), 'wb'), protocol=pickle.HIGHEST_PROTOCOL)
-    #         pickle.dump(losses, open('losses_{}_swish.pkl'.format(epoch), 'wb'), protocol=pickle.HIGHEST_PROTOCOL)
 
     yolo = model
     # yolo = pickle.load(open('yolo_500_leaky.pkl', 'rb'))

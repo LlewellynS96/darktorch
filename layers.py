@@ -16,7 +16,7 @@ class YOLOv2Layer(nn.Module):
         self.device = parent.device
         self.anchors = torch.tensor(anchors, device=self.device)
         self.num_anchors = len(anchors)
-        self.grid_size = parent.grid_size
+        self.grid_size = parent.get_grid_size()
         self.num_features = parent.num_features
 
     def forward(self, x):
@@ -61,7 +61,7 @@ class YOLOv3Layer(nn.Module):
         self.device = parent.device
         self.anchors = torch.tensor(anchors, device=self.device)
         self.num_anchors = len(anchors)
-        self.grid_size = parent.grid_size
+        self.grid_size = parent.get_grid_size()
         self.num_features = parent.num_features
 
     def forward(self, x):

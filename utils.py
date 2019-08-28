@@ -7,70 +7,24 @@ from torch.utils.data import Dataset
 
 
 BGR_PIXEL_MEANS = np.array([103.939, 116.779, 123.68])
+PRINT_LINE_LEN = 100
+NUM_WORKERS = 4
 
 
 class PascalDatasetYOLO(Dataset):
 
-    def __init__(self,
-                 anchors,
-                 root_dir='data/VOC2012/',
-                 classes=None,
-                 dataset='train',
-                 skip_truncated=True,
-                 skip_difficult=True,
-                 image_size=(416, 416),
-                 grid_size=(13, 13)
-                 ):
+    def __init__(self, anchors, classes, root_dir='data/VOC2012/', dataset='train',
+                 skip_truncated=True, skip_difficult=True, image_size=(416, 416), grid_size=(13, 13)):
 
-        assert set(classes).issubset({'aeroplane',
-                                      'bicycle',
-                                      'bird',
-                                      'boat',
-                                      'bottle',
-                                      'bus',
-                                      'car',
-                                      'cat',
-                                      'chair',
-                                      'cow',
-                                      'diningtable',
-                                      'dog',
-                                      'horse',
-                                      'motorbike',
-                                      'person',
-                                      'pottedplant',
-                                      'sheep',
-                                      'sofa',
-                                      'train',
-                                      'tvmonitor'})
+        self.classes = read_classes(classes)
+
+        assert set(self.classes).issubset({'aeroplane', 'bicycle', 'bird', 'boat', 'bottle', 'bus', 'car', 'cat',
+                                           'chair', 'cow', 'diningtable', 'dog', 'horse', 'motorbike', 'person',
+                                           'pottedplant', 'sheep', 'sofa', 'train', 'tvmonitor'})
 
         assert dataset in ['train', 'val', 'trainval']
 
-        if classes is None:
-            self.classes = ['aeroplane',
-                            'bicycle',
-                            'bird',
-                            'boat',
-                            'bottle',
-                            'bus',
-                            'car',
-                            'cat',
-                            'chair',
-                            'cow',
-                            'diningtable',
-                            'dog',
-                            'horse',
-                            'motorbike',
-                            'person',
-                            'pottedplant',
-                            'sheep',
-                            'sofa',
-                            'train',
-                            'tvmonitor'
-                            ]
-        else:
-            self.classes = classes
-
-        self.anchors = torch.tensor(anchors)
+        self.anchors = anchors.clone().detach().cpu()
         self.num_classes = len(self.classes)
         self.num_anchors = len(self.anchors)
         self.num_features = 5 + self.num_classes
@@ -86,7 +40,7 @@ class PascalDatasetYOLO(Dataset):
         self.image_size = image_size
         self.grid_size = grid_size
 
-        for cls in classes:
+        for cls in self.classes:
             file = os.path.join(self.sets_dir, '{}_{}.txt'.format(cls, dataset))
             with open(file) as f:
                 for line in f:
@@ -303,3 +257,11 @@ def xywh2xyxy(xywh):
     xyxy[:, 2:] = xywh[:, :2] + half
 
     return xyxy
+
+
+def read_classes(file):
+    file = open(file, 'r')
+    lines = file.read().split('\n')
+    lines = [l for l in lines if l[0] != '#']
+    classes = [l for l in lines if len(l) > 0]
+    return classes
