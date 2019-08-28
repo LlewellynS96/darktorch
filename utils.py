@@ -120,14 +120,13 @@ class PascalDatasetYOLO(Dataset):
                 anchors[:, 0::2] += xmin
                 anchors[:, 1::2] += ymin
                 ious = jaccard(ground_truth, anchors)
-                match = np.argmax(ious)
-                anchor = self.anchors[match].numpy()
-                target[idx[0], idx[1], match * self.num_features] = 1.
-                target[idx[0], idx[1], match * self.num_features + 1] = (xmin + xmax) / 2.
-                target[idx[0], idx[1], match * self.num_features + 2] = (ymin + ymax) / 2.
-                target[idx[0], idx[1], match * self.num_features + 3] = xmax - xmin
-                target[idx[0], idx[1], match * self.num_features + 4] = ymax - ymin
-                target[idx[0], idx[1], match * self.num_features + 5:(match + 1) * self.num_features] = self.encode_categorical(name)
+                assign = np.argmax(ious)
+                target[idx[0], idx[1], assign * self.num_features] = 1.
+                target[idx[0], idx[1], assign * self.num_features + 1] = (xmin + xmax) / 2.
+                target[idx[0], idx[1], assign * self.num_features + 2] = (ymin + ymax) / 2.
+                target[idx[0], idx[1], assign * self.num_features + 3] = xmax - xmin
+                target[idx[0], idx[1], assign * self.num_features + 4] = ymax - ymin
+                target[idx[0], idx[1], assign * self.num_features + 5:(assign + 1) * self.num_features] = self.encode_categorical(name)
 
         image = cv2.resize(image, self.image_size)
         # Subtract the mean pixel values (across the training set) to zero-mean the image.

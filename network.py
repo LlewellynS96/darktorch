@@ -84,16 +84,17 @@ class YOLOv2tiny(nn.Module):
         # Create a mask and compile a tensor only containing detectors that are responsible for objects.
         obj_mask = torch.nonzero(targets[:, 0]).flatten()
 
-        # Convert t_o --> IoU
         predictions[:, 0] = torch.sigmoid(predictions[:, 0])
 
         if obj_mask.numel() > 0:
             # Convert t_x and t_x --> x and y (ignoring the offset).
             predictions[:, 1:3] = torch.sigmoid(predictions[:, 1:3])
             # Add the offset.
-            offsets = torch.arange(0, predictions.shape[0], device=self.device)
+            offsets = torch.arange(0, int(predictions.shape[0] / batch_size), device=self.device)
             h_offsets = offsets / self.grid_size[0] / self.num_anchors
             v_offsets = (offsets - (h_offsets * self.grid_size[0] * self.num_anchors)) / self.num_anchors
+            h_offsets = h_offsets.repeat(batch_size)
+            v_offsets = v_offsets.repeat(batch_size)
             predictions[:, 1] += h_offsets.float()
             predictions[:, 2] += v_offsets.float()
             predictions[:, 1] /= self.grid_size[0]
@@ -153,7 +154,7 @@ class YOLOv2tiny(nn.Module):
         train_dataloader = DataLoader(dataset=train_data,
                                       batch_size=batch_size,
                                       shuffle=shuffle,
-                                      num_workers=0)
+                                      num_workers=2)
 
         train_loss = []
         val_loss = []
@@ -189,6 +190,7 @@ class YOLOv2tiny(nn.Module):
             train_loss.append(np.mean(batch_loss))
             progress = '=' * line_len
             if val_data is not None:
+                self.set_grid_size(13, 13)
                 val_loss.append(self.calculate_loss(val_data, batch_size))
                 print('\rEpoch: [{}/{}] |{}| [{}/{}] Training Loss: {:.6f} Validation Loss: {:.6f}'.format(epoch, epochs, progress, i, len(train_dataloader), train_loss[-1], val_loss[-1]), end='\n')
             else:
@@ -209,16 +211,16 @@ class YOLOv2tiny(nn.Module):
                                     batch_size=batch_size,
                                     shuffle=False,
                                     num_workers=0)
-        loss = []
+        losses = []
         with torch.no_grad():
             for images, targets in val_dataloader:
                 images = images.to(self.device)
                 targets = targets.to(self.device)
                 predictions = self(images)
                 loss = self.loss(predictions, targets)
-                loss.append(loss['total'].item())
+                losses.append(loss['total'].item())
 
-        return np.mean(loss)
+        return np.mean(losses)
 
 
 class ConvBatchLeaky(nn.Module):
@@ -311,10 +313,10 @@ def main():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     anchors = ((0.3, 0.3), (0.2, 0.6), (0.6, 0.2), (0.3, 0.8))
-    classes = ['bicycle', 'person', 'car']
+    classes = ['bicycle']#, 'person', 'car']
     image_size = (416, 416)
     grid_size = (13, 13)
-    batch_size = 8
+    batch_size = 10
 
     train_data = PascalDatasetYOLO(root_dir='../data/VOC2012/',
                                    classes=classes,#, 'car', 'cat', 'person', 'train', 'tvmonitor'],
@@ -326,20 +328,20 @@ def main():
                                    anchors=anchors
                                    )
 
-    train_dataloader = DataLoader(dataset=train_data,
-                                  batch_size=batch_size,
-                                  shuffle=True,
-                                  num_workers=0)
-
     val_data = PascalDatasetYOLO(root_dir='../data/VOC2012/',
-                                   classes=classes,#, 'car', 'cat', 'person', 'train', 'tvmonitor'],
-                                   dataset='train',
-                                   skip_truncated=False,
-                                   skip_difficult=False,
-                                   image_size=image_size,
-                                   grid_size=grid_size,
-                                   anchors=anchors
-                                   )
+                                 classes=classes,#, 'car', 'cat', 'person', 'train', 'tvmonitor'],
+                                 dataset='val',
+                                 skip_truncated=False,
+                                 skip_difficult=False,
+                                 image_size=image_size,
+                                 grid_size=grid_size,
+                                 anchors=anchors
+                                 )
+
+    dataloader = DataLoader(dataset=val_data,
+                            batch_size=batch_size,
+                            shuffle=True,
+                            num_workers=0)
 
     torch.random.manual_seed(12345)
     np.random.seed(12345)
@@ -355,15 +357,16 @@ def main():
     torchsummary.summary(model, (3, 416, 416))
 
     optimizer = optim.SGD(model.parameters(), lr=1e-4, momentum=0.98)
-    # optimizer = optim.Adam(yolo.parameters())
+    # optimizer = optim.Adam(model.parameters())
 
-    # model.fit(train_data=train_data,
-    #           val_data=val_data,
-    #           optimizer=optimizer,
-    #           batch_size=10,
-    #           epochs=100,
-    #           verbose=True,
-    #           checkpoint_frequency=100)
+    model.fit(train_data=train_data,
+              val_data=val_data,
+              optimizer=optimizer,
+              batch_size=batch_size,
+              epochs=500,
+              verbose=True,
+              multi_scale=True,
+              checkpoint_frequency=100)
 
     # device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     #
@@ -420,7 +423,8 @@ def main():
     #         pickle.dump(yolo, open('yolo_{}_swish.pkl'.format(epoch), 'wb'), protocol=pickle.HIGHEST_PROTOCOL)
     #         pickle.dump(losses, open('losses_{}_swish.pkl'.format(epoch), 'wb'), protocol=pickle.HIGHEST_PROTOCOL)
 
-    yolo = pickle.load(open('yolo_100_leaky.pkl', 'rb'))
+    yolo = model
+    # yolo = pickle.load(open('yolo_500_leaky.pkl', 'rb'))
     train_data.set_image_size(416, 416)
     train_data.set_grid_size(13, 13)
     yolo.set_grid_size(*train_data.grid_size)
@@ -432,7 +436,7 @@ def main():
 
     with torch.no_grad():
         for epoch in range(1):
-            for i, data in enumerate(train_dataloader):
+            for i, data in enumerate(dataloader):
                 images, targets = data
                 images = images.to(device)
                 for image, target in zip(images, targets):
@@ -440,7 +444,7 @@ def main():
                     #     threshold = float(input('Input a threshold:'))
                     # except:
                     #     threshold = 0.
-                    threshold = 0.001
+                    threshold = 0.1
 
                     annotations = []
                     predictions = yolo(image[np.newaxis])
