@@ -9,12 +9,12 @@ from torch import nn
 from torch.utils.data import DataLoader
 from torch import optim
 from utils import BGR_PIXEL_MEANS, PascalDatasetYOLO, jaccard, xywh2xyxy
-import time
+from layers import *
 
 
 class YOLOv2tiny(nn.Module):
 
-    def __init__(self, num_classes, grid_size=None, anchors=None, device='cuda', batch_size=10, activation='leaky'):
+    def __init__(self, model, num_classes, grid_size, device='cuda', batch_size=10):
 
         super(YOLOv2tiny, self).__init__()
 
@@ -22,49 +22,39 @@ class YOLOv2tiny(nn.Module):
         self.batch_size = batch_size
         self.num_classes = num_classes
         self.num_features = 5 + self.num_classes
+        self.layers = nn.ModuleList()
+        self.blocks = []
+        self.net_info = {}
 
-        if anchors is None:
-            self.anchors = torch.tensor(np.array(((0.5, 0.5), (0.3, 0.6), (0.6, 0.3)), dtype=np.float32), device=device)
-        else:
-            self.anchors = torch.tensor(np.array(anchors, dtype=np.float32), device=device)
-        self.num_anchors = len(self.anchors)
+        self.grid_size = grid_size
 
-        if grid_size is None:
-            self.grid_size = (13, 13)
-        else:
-            self.grid_size = grid_size
-
-        if activation == 'leaky':
-            conv_layer = ConvBatchLeaky
-        elif activation == 'swish':
-            conv_layer = ConvBatchSwish
-        else:
-            AssertionError
+        self.parse_cfg(model)
+        self.build_modules()
 
         self.downscale_factor = 32
 
-        self.channels = [3, 16, 32, 64, 128, 256]
-        self.layers = nn.ModuleList()
-        for in_c, out_c in zip(self.channels, self.channels[1:]):
-            self.layers.append(conv_layer(in_channels=in_c, out_channels=out_c))
-            self.layers.append(nn.MaxPool2d(kernel_size=2, stride=2, padding=0))
-        self.channels.append(512)
-        self.layers.append(conv_layer(in_channels=self.channels[-2], out_channels=self.channels[-1]))
-        self.layers.append(nn.ReplicationPad2d(padding=(0, 1, 0, 1)))
-        self.layers.append(nn.MaxPool2d(kernel_size=2, stride=1))
-        self.channels.append(1024)
-        self.layers.append(conv_layer(in_channels=self.channels[-2], out_channels=self.channels[-1]))
-        self.channels.append(512)
-        self.layers.append(conv_layer(in_channels=self.channels[-2], out_channels=self.channels[-1]))
-        self.channels.append(self.num_anchors * (5 + self.num_classes))
-        self.layers.append(nn.Conv2d(in_channels=self.channels[-2], out_channels=self.channels[-1], kernel_size=1))
+        # self.channels = [3, 16, 32, 64, 128, 256]
+        # self.layers = nn.ModuleList()
+        # for in_c, out_c in zip(self.channels, self.channels[1:]):
+        #     self.layers.append(conv_layer(in_channels=in_c, out_channels=out_c))
+        #     self.layers.append(nn.MaxPool2d(kernel_size=2, stride=2, padding=0))
+        # self.channels.append(512)
+        # self.layers.append(conv_layer(in_channels=self.channels[-2], out_channels=self.channels[-1]))
+        # self.layers.append(nn.ReplicationPad2d(padding=(0, 1, 0, 1)))
+        # self.layers.append(nn.MaxPool2d(kernel_size=2, stride=1))
+        # self.channels.append(1024)
+        # self.layers.append(conv_layer(in_channels=self.channels[-2], out_channels=self.channels[-1]))
+        # self.channels.append(512)
+        # self.layers.append(conv_layer(in_channels=self.channels[-2], out_channels=self.channels[-1]))
+        # self.channels.append(self.num_anchors * (5 + self.num_classes))
+        # self.layers.append(nn.Conv2d(in_channels=self.channels[-2], out_channels=self.channels[-1], kernel_size=1))
 
     def forward(self, x):
         for layer in self.layers:
             x = layer(x)
         return x
 
-    def loss(self, predictions, targets):
+    def loss(self, predictions, targets, anchors):
 
         assert predictions.shape == targets.shape
 
@@ -84,30 +74,9 @@ class YOLOv2tiny(nn.Module):
         # Create a mask and compile a tensor only containing detectors that are responsible for objects.
         obj_mask = torch.nonzero(targets[:, 0]).flatten()
 
-        predictions[:, 0] = torch.sigmoid(predictions[:, 0])
-
         if obj_mask.numel() > 0:
-            # Convert t_x and t_x --> x and y (ignoring the offset).
-            predictions[:, 1:3] = torch.sigmoid(predictions[:, 1:3])
-            # Add the offset.
-            offsets = torch.arange(0, int(predictions.shape[0] / batch_size), device=self.device)
-            h_offsets = offsets / self.grid_size[0] / self.num_anchors
-            v_offsets = (offsets - (h_offsets * self.grid_size[0] * self.num_anchors)) / self.num_anchors
-            h_offsets = h_offsets.repeat(batch_size)
-            v_offsets = v_offsets.repeat(batch_size)
-            predictions[:, 1] += h_offsets.float()
-            predictions[:, 2] += v_offsets.float()
-            predictions[:, 1] /= self.grid_size[0]
-            predictions[:, 2] /= self.grid_size[1]
-
             # Convert t_w and t_h --> w and h.
-            anchors = self.anchors.repeat(batch_size * self.grid_size[0] * self.grid_size[1], 1)
-
-            predictions[:, 3] = anchors[:, 0] * torch.exp(predictions[:, 3])
-            predictions[:, 4] = anchors[:, 1] * torch.exp(predictions[:, 4])
-            # Add softmax to class probabilities.
-            # NB!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-            predictions[obj_mask, 5:] = torch.sigmoid(predictions[obj_mask, 5:])
+            anchors = anchors.repeat(batch_size * self.grid_size[0] * self.grid_size[1], 1)
 
             predictions_xyxy = xywh2xyxy(predictions[:, 1:5])
             targets_xyxy = xywh2xyxy(targets[obj_mask, 1:5])
@@ -154,7 +123,7 @@ class YOLOv2tiny(nn.Module):
         train_dataloader = DataLoader(dataset=train_data,
                                       batch_size=batch_size,
                                       shuffle=shuffle,
-                                      num_workers=2)
+                                      num_workers=0)
 
         train_loss = []
         val_loss = []
@@ -176,7 +145,7 @@ class YOLOv2tiny(nn.Module):
                 targets = targets.to(self.device)
                 optimizer.zero_grad()
                 predictions = self(images)
-                loss = self.loss(predictions, targets)
+                loss = self.loss(predictions, targets, self.layers[-1][0].anchors)
                 batch_loss.append(loss['total'].item())
                 loss['total'].backward()
                 optimizer.step()
@@ -202,6 +171,9 @@ class YOLOv2tiny(nn.Module):
 
     def set_grid_size(self, x, y):
         self.grid_size = x, y
+        for layer in self.layers:
+            if hasattr(layer, 'grid_size'):
+                layer.grid_size = x, y
 
     def save_model(self, name):
         pickle.dump(self, open(name, 'wb'), protocol=pickle.HIGHEST_PROTOCOL)
@@ -217,105 +189,260 @@ class YOLOv2tiny(nn.Module):
                 images = images.to(self.device)
                 targets = targets.to(self.device)
                 predictions = self(images)
-                loss = self.loss(predictions, targets)
+                loss = self.loss(predictions, targets, self.layers[-1][0].anchors)
                 losses.append(loss['total'].item())
 
         return np.mean(losses)
 
+    def parse_cfg(self, file):
+        file = open(file, 'r')
+        lines = file.read().split('\n')  # store the lines in a list
+        lines = [l for l in lines if len(l) > 0]
+        lines = [l for l in lines if l[0] != '#']
+        lines = [l.rstrip().lstrip() for l in lines]
 
-class ConvBatchLeaky(nn.Module):
-    """ This convenience layer groups a 2D convolution, a batchnorm and a leaky ReLU.
-    They are executed in a sequential manner.
-    Args:
-        in_channels (int): Number of input channels
-        out_channels (int): Number of output channels
-        kernel_size (int): Size of the kernel of the convolution
-        stride (int): Stride of the convolution
-        padding (int): padding of the convolution
-        leaky_slope (number, optional): Controls the angle of the negative slope of the leaky ReLU; Default **0.1**
-    """
+        block = {}
+        self.blocks = []
 
-    def __init__(self, in_channels, out_channels, kernel_size=3, stride=1, leaky_slope=0.1):
-        super(ConvBatchLeaky, self).__init__()
+        for line in lines:
+            if line[0] == '[':  # This marks the start of a new block
+                if len(block) > 0:
+                    self.blocks.append(block)
+                    block = {}
+                block['type'] = line[1:-1]
+            else:
+                key, value = line.split('=')
+                block[key.rstrip()] = value.lstrip()
+        self.blocks.append(block)
 
-        # Parameters
-        self.in_channels = in_channels
-        self.out_channels = out_channels
-        self.kernel_size = kernel_size
-        self.stride = stride
-        self.padding = int(kernel_size / 2)
-        self.leaky_slope = leaky_slope
+        return self.blocks
 
-        # Layer
-        self.layers = nn.Sequential(
-            nn.Conv2d(self.in_channels, self.out_channels, self.kernel_size, self.stride, self.padding,
-                      bias=False),
-            nn.BatchNorm2d(self.out_channels),
-            nn.LeakyReLU(self.leaky_slope, inplace=True),
-        )
+    def build_modules(self):
+        self.net_info = self.blocks[0]  # Captures the information about the input and pre-processing
 
-    def __repr__(self):
-        s = '{name} ({in_channels}, {out_channels}, kernel_size={kernel_size}, stride={stride}, padding={padding}, negative_slope={leaky_slope})'
-        return s.format(name=self.__class__.__name__, **self.__dict__)
+        self.layers = nn.ModuleList()
 
-    def forward(self, x):
-        x = self.layers(x)
-        return x
+        index = 0  # indexing blocks helps with implementing route  layers (skip connections)
+        prev_filters = 3
+        output_filters = []
 
+        for block in self.blocks[1:]:
+            module = nn.Sequential()
 
-class ConvBatchSwish(nn.Module):
+            # If it's a convolutional layer
+            if block['type'] == 'convolutional':
+                # Get the info about the layer
+                activation = block['activation']
+                try:
+                    batch_normalize = bool(block['batch_normalize'])
+                    bias = False
+                except:
+                    batch_normalize = False
+                    bias = True
 
-    def __init__(self, in_channels, out_channels, kernel_size=3, stride=1):
-        super(ConvBatchLeaky, self).__init__()
+                filters = int(block['filters'])
+                padding = bool(block['pad'])
+                kernel_size = int(block['size'])
+                stride = int(block['stride'])
 
-        # Parameters
-        self.in_channels = in_channels
-        self.out_channels = out_channels
-        self.kernel_size = kernel_size
-        self.stride = stride
-        self.padding = int(kernel_size / 2)
+                if padding:
+                    pad = (kernel_size - 1) // 2
+                else:
+                    pad = 0
 
-        # Layer
-        self.layers = nn.Sequential(
-            nn.Conv2d(self.in_channels, self.out_channels, self.kernel_size, self.stride, self.padding,
-                      bias=False),
-            nn.BatchNorm2d(self.out_channels),
-            Swish()
-        )
+                # Add the convolutional layer
+                conv_layer = nn.Conv2d(prev_filters, filters, kernel_size, stride, pad, bias=bias)
+                module.add_module('conv_{0}'.format(index), conv_layer)
 
-    def __repr__(self):
-        s = '{name} ({in_channels}, {out_channels}, kernel_size={kernel_size}, stride={stride}, padding={padding}, negative_slope={leaky_slope})'
-        return s.format(name=self.__class__.__name__, **self.__dict__)
+                # Add the Batch Norm Layer
+                if batch_normalize:
+                    bn_layer = nn.BatchNorm2d(filters)
+                    module.add_module('batch_norm_{0}'.format(index), bn_layer)
 
-    def forward(self, x):
-        x = self.layers(x)
-        return x
+                # Check the activation.
+                # It is either Linear or a Leaky ReLU for YOLO
+                if activation == 'leaky':
+                    activation_layer = nn.LeakyReLU(negative_slope=0.1, inplace=True)
+                    module.add_module('leaky_{0}'.format(index), activation_layer)
+                elif activation == 'swish':
+                    activation_layer = Swish(beta=1., learnable=True)
+                    module.add_module('swish_{0}'.format(index), activation_layer)
+                elif activation == 'linear':
+                    pass
+                else:
+                    raise AssertionError('Unknown activation in configuration file.')
 
+            elif block['type'] == 'upsample':
+                stride = int(block['stride'])
+                upsample_layer = nn.Upsample(scale_factor=stride, mode='nearest')
+                module.add_module('upsample_{}'.format(index), upsample_layer)
 
-class Swish(nn.Module):
+            elif block['type'] == 'route':
+                block['layers'] = block['layers'].split(',')
 
-    def __init__(self, beta=1.0, learnable=True):
-        super(Swish, self).__init__()
+                # Start  of a route
+                start = int(block['layers'][0])
 
-        # Parameters
-        if learnable:
-            self.beta = nn.Parameter(beta * torch.ones(1))
-            self.beta.requires_grad = True
-        else:
-            self.beta = beta
-            self.beta.requires_grad = False
+                # end, if there exists one.
+                try:
+                    end = int(block['layers'][1])
+                except IndexError:
+                    end = 0
 
-    def forward(self, x):
-        return x * nn.Sigmoid(self.beta * x)
+                if start > 0:
+                    start = start - index
+                if end > 0:
+                    end = end - index
+
+                route_layer = EmptyLayer()
+                module.add_module('route_{0}'.format(index), route_layer)
+
+                if end < 0:
+                    filters = output_filters[index + start] + output_filters[index + end]
+                else:
+                    filters = output_filters[index + start]
+
+            elif block['type'] == 'shortcut':
+                shortcut_layer = EmptyLayer()
+                module.add_module()
+
+            elif block['type'] == 'maxpool':
+                stride = int(block['stride'])
+                size = int(block['size'])
+                if stride == 1:
+                    pad_layer = nn.ReplicationPad2d(padding=(0, 1, 0, 1))
+                    module.add_module('pad_layer_{}'.format(index), pad_layer)
+                    maxpool_layer = nn.MaxPool2d(size, stride)
+                else:
+                    maxpool_layer = nn.MaxPool2d(size, stride, padding=0)
+                module.add_module('maxpool_{}'.format(index), maxpool_layer)
+
+            elif block['type'] == 'yolo':
+                mask = block['mask'].split(',')
+                mask = [int(x) for x in mask]
+
+                anchors = block['anchors'].split(',')
+                anchors = [int(anchor) for anchor in anchors]
+                anchors = [(anchors[i] / int(self.net_info['width']), anchors[i + 1] / int(self.net_info['height'])) for i in range(0, len(anchors), 2)]
+                anchors = [anchors[i] for i in mask]
+
+                detection_layer = YOLOv3Layer(self, anchors)
+                module.add_module('detection_{}'.format(index), detection_layer)
+
+            elif block['type'] == 'region':
+                anchors = block['anchors'].split(',')
+                anchors = [(float(anchors[i]) / self.grid_size[0], float(anchors[i + 1]) / self.grid_size[1])
+                           for i in range(0, len(anchors), 2)]
+
+                detection_layer = YOLOv2Layer(self, anchors)
+                module.add_module('detection_{}'.format(index), detection_layer)
+
+            else:
+                raise AssertionError('Unknown block in configuration file.')
+
+            self.layers.append(module)
+            prev_filters = filters
+            output_filters.append(filters)
+            index += 1
+
+        return self.net_info, self.layers
+
+    def load_weights(self, weightfile):
+
+        # Open the weights file
+        fp = open(weightfile, "rb")
+
+        # The first 4 values are header information
+        # 1. Major version number
+        # 2. Minor Version Number
+        # 3. Subversion number
+        # 4. IMages seen
+        header = np.fromfile(fp, dtype=np.int32, count=5)
+        self.header = torch.from_numpy(header)
+        self.seen = self.header[3]
+
+        # The rest of the values are the weights
+        # Let's load them up
+        weights = np.fromfile(fp, dtype=np.float32)
+
+        ptr = 0
+        for i in range(len(self.module_list)):
+            module_type = self.blocks[i + 1]["type"]
+
+            if module_type == "convolutional":
+                model = self.module_list[i]
+                try:
+                    batch_normalize = int(self.blocks[i + 1]["batch_normalize"])
+                except:
+                    batch_normalize = 0
+
+                conv = model[0]
+
+                if (batch_normalize):
+                    bn = model[1]
+
+                    # Get the number of weights of Batch Norm Layer
+                    num_bn_biases = bn.bias.numel()
+
+                    # Load the weights
+                    bn_biases = torch.from_numpy(weights[ptr:ptr + num_bn_biases])
+                    ptr += num_bn_biases
+
+                    bn_weights = torch.from_numpy(weights[ptr: ptr + num_bn_biases])
+                    ptr += num_bn_biases
+
+                    bn_running_mean = torch.from_numpy(weights[ptr: ptr + num_bn_biases])
+                    ptr += num_bn_biases
+
+                    bn_running_var = torch.from_numpy(weights[ptr: ptr + num_bn_biases])
+                    ptr += num_bn_biases
+
+                    # Cast the loaded weights into dims of model weights.
+                    bn_biases = bn_biases.view_as(bn.bias.data)
+                    bn_weights = bn_weights.view_as(bn.weight.data)
+                    bn_running_mean = bn_running_mean.view_as(bn.running_mean)
+                    bn_running_var = bn_running_var.view_as(bn.running_var)
+
+                    # Copy the data to model
+                    bn.bias.data.copy_(bn_biases)
+                    bn.weight.data.copy_(bn_weights)
+                    bn.running_mean.copy_(bn_running_mean)
+                    bn.running_var.copy_(bn_running_var)
+
+                else:
+                    # Number of biases
+                    num_biases = conv.bias.numel()
+
+                    # Load the weights
+                    conv_biases = torch.from_numpy(weights[ptr: ptr + num_biases])
+                    ptr = ptr + num_biases
+
+                    # reshape the loaded weights according to the dims of the model weights
+                    conv_biases = conv_biases.view_as(conv.bias.data)
+
+                    # Finally copy the data
+                    conv.bias.data.copy_(conv_biases)
+
+                # Let us load the weights for the Convolutional layers
+                num_weights = conv.weight.numel()
+
+                # Do the same as above for weights
+                conv_weights = torch.from_numpy(weights[ptr:ptr + num_weights])
+                ptr = ptr + num_weights
+
+                conv_weights = conv_weights.view_as(conv.weight.data)
+                conv.weight.data.copy_(conv_weights)
 
 
 def main():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    anchors = ((0.3, 0.3), (0.2, 0.6), (0.6, 0.2), (0.3, 0.8))
+    grid_size = (13, 13)
+    anchors = [0.57273,0.677385, 1.87446,2.06253, 3.33843,5.47434, 7.88282,3.52778, 9.77052,9.16828]
+    anchors = tuple([(anchors[i] / grid_size[0], anchors[i + 1] / grid_size[1]) for i in range(0, len(anchors), 2)])
+    # anchors = ((0.3, 0.3), (0.2, 0.6), (0.6, 0.2), (0.3, 0.8))
     classes = ['bicycle']#, 'person', 'car']
     image_size = (416, 416)
-    grid_size = (13, 13)
     batch_size = 10
 
     train_data = PascalDatasetYOLO(root_dir='../data/VOC2012/',
@@ -346,9 +473,9 @@ def main():
     torch.random.manual_seed(12345)
     np.random.seed(12345)
 
-    model = YOLOv2tiny(num_classes=len(classes),
+    model = YOLOv2tiny(model='models/yolov2-tiny.cfg',
+                       num_classes=len(classes),
                        grid_size=grid_size,
-                       anchors=anchors,
                        batch_size=batch_size,
                        device=device)
 
@@ -365,7 +492,7 @@ def main():
               batch_size=batch_size,
               epochs=500,
               verbose=True,
-              multi_scale=True,
+              multi_scale=False,
               checkpoint_frequency=100)
 
     # device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')

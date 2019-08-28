@@ -12,14 +12,14 @@ BGR_PIXEL_MEANS = np.array([103.939, 116.779, 123.68])
 class PascalDatasetYOLO(Dataset):
 
     def __init__(self,
+                 anchors,
                  root_dir='data/VOC2012/',
                  classes=None,
                  dataset='train',
                  skip_truncated=True,
                  skip_difficult=True,
                  image_size=(416, 416),
-                 grid_size=(13, 13),
-                 anchors=None
+                 grid_size=(13, 13)
                  ):
 
         assert set(classes).issubset({'aeroplane',
@@ -70,12 +70,7 @@ class PascalDatasetYOLO(Dataset):
         else:
             self.classes = classes
 
-        if anchors is None:
-            # Set the dimensions for the anchors (xmin, ymin, xmax, ymax).
-            self.anchors = torch.tensor(np.array(((0.5, 0.5), (0.3, 0.6), (0.6, 0.3)), dtype=np.float32))
-        else:
-            self.anchors = torch.tensor(np.array(anchors, dtype=np.float32))
-
+        self.anchors = torch.tensor(anchors)
         self.num_classes = len(self.classes)
         self.num_anchors = len(self.anchors)
         self.num_features = 5 + self.num_classes
@@ -180,7 +175,6 @@ class PascalDatasetYOLO(Dataset):
 
     def set_grid_size(self, x, y):
         self.grid_size = x, y
-
 
 # Original author: Francisco Massa:
 # https://github.com/fmassa/object-detection.torch
