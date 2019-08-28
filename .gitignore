@@ -1,0 +1,6 @@
+# Ignore folders.
+.idea
+
+# Ignore files.
+*.pkl
+*.pyc
