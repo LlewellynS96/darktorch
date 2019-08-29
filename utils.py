@@ -130,6 +130,7 @@ class PascalDatasetYOLO(Dataset):
     def set_grid_size(self, x, y):
         self.grid_size = x, y
 
+
 # Original author: Francisco Massa:
 # https://github.com/fmassa/object-detection.torch
 # Ported to PyTorch by Max deGroot (02/01/2017)
@@ -262,6 +263,6 @@ def xywh2xyxy(xywh):
 def read_classes(file):
     file = open(file, 'r')
     lines = file.read().split('\n')
-    lines = [l for l in lines if l[0] != '#']
-    classes = [l for l in lines if len(l) > 0]
+    lines = [l for l in lines if len(l) > 0]
+    classes = [l for l in lines if l[0] != '#']
     return classes

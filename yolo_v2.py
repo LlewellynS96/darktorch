@@ -33,6 +33,7 @@ class YOLOv2tiny(nn.Module):
         self.build_modules()
 
         self.anchors = self.get_anchors()
+        self.num_anchors = len(self.anchors)
 
     def forward(self, x):
         for layer in self.layers:
@@ -45,7 +46,7 @@ class YOLOv2tiny(nn.Module):
 
         batch_size = targets.shape[0]
 
-        lambda_coord = 5.
+        lambda_coord = 10.
         lambda_obj = 2.
         lambda_noobj = 0.2
 
@@ -62,8 +63,6 @@ class YOLOv2tiny(nn.Module):
 
         if obj_mask.numel() > 0:
             # Convert t_w and t_h --> w and h.
-            anchors = self.anchors.repeat(batch_size * self.grid_size[0] * self.grid_size[1], 1)
-
             predictions_xyxy = xywh2xyxy(predictions[:, 1:5])
             targets_xyxy = xywh2xyxy(targets[obj_mask, 1:5])
 
@@ -73,8 +72,10 @@ class YOLOv2tiny(nn.Module):
             loss['object'] = lambda_obj * nn.MSELoss(reduction='sum')(predictions[obj_mask, 0], ious[obj_mask])
             loss['coord'] = nn.MSELoss(reduction='sum')(predictions[obj_mask, 1], targets[obj_mask, 1])
             loss['coord'] += nn.MSELoss(reduction='sum')(predictions[obj_mask, 2], targets[obj_mask, 2])
-            loss['coord'] += nn.MSELoss(reduction='sum')(torch.sqrt(predictions[obj_mask, 3]), torch.sqrt(targets[obj_mask, 3]))
-            loss['coord'] += nn.MSELoss(reduction='sum')(torch.sqrt(predictions[obj_mask, 4]), torch.sqrt(targets[obj_mask, 4]))
+            loss['coord'] += nn.MSELoss(reduction='sum')(torch.sqrt(predictions[obj_mask, 3]),
+                                                         torch.sqrt(targets[obj_mask, 3]))
+            loss['coord'] += nn.MSELoss(reduction='sum')(torch.sqrt(predictions[obj_mask, 4]),
+                                                         torch.sqrt(targets[obj_mask, 4]))
             # Multiply by lambda_coord
             loss['coord'] *= lambda_coord
             # Divide by the number of separate loss components.
@@ -87,7 +88,8 @@ class YOLOv2tiny(nn.Module):
             targets[noobj_mask, 0] = 2.
             noobj_mask = torch.nonzero(targets[:, 0] == 0.).squeeze()
 
-            loss['no_object'] = lambda_noobj * nn.MSELoss(reduction='sum')(predictions[noobj_mask, 0], targets[noobj_mask, 0])
+            loss['no_object'] = lambda_noobj * nn.MSELoss(reduction='sum')(predictions[noobj_mask, 0],
+                                                                           targets[noobj_mask, 0])
         else:
             loss['object'] = torch.tensor([0.], device=self.device)
             loss['coord'] = torch.tensor([0.], device=self.device)
@@ -474,16 +476,16 @@ def main():
     np.random.seed(12345)
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    batch_size = 24
+    batch_size = 10
 
     model = YOLOv2tiny(model='models/yolov2-tiny.cfg',
                        device=device)
     model = model.to(device)
 
-    torchsummary.summary(model, (3, 416, 416))
+    # torchsummary.summary(model, (3, 416, 416))
 
     train_data = PascalDatasetYOLO(root_dir='../data/VOC2012/',
-                                   classes='../data/VOC2012/voc.names',  # , 'car', 'cat', 'person', 'train', 'tvmonitor'],
+                                   classes='../data/VOC2012/voc.names',
                                    dataset='train',
                                    skip_truncated=False,
                                    skip_difficult=False,
@@ -502,25 +504,31 @@ def main():
                                  anchors=model.anchors
                                  )
 
-    optimizer = optim.SGD(model.parameters(), lr=1e-4, momentum=0.98)
+    optimizer = optim.SGD(model.parameters(), lr=5e-5, momentum=0.98)
     # optimizer = optim.Adam(model.parameters())
 
-    model.fit(train_data=train_data,
-              val_data=val_data,
-              optimizer=optimizer,
-              batch_size=batch_size,
-              epochs=500,
-              verbose=True,
-              multi_scale=True,
-              checkpoint_frequency=100)
+    # model.fit(train_data=train_data,
+    #           val_data=val_data,
+    #           optimizer=optimizer,
+    #           batch_size=batch_size,
+    #           epochs=500,
+    #           verbose=True,
+    #           multi_scale=False,
+    #           checkpoint_frequency=100)
 
-    yolo = model
-    # yolo = pickle.load(open('yolo_500_leaky.pkl', 'rb'))
+    # yolo = model
+    yolo = pickle.load(open('yolov2_tiny_500.pkl', 'rb'))
     train_data.set_image_size(416, 416)
     train_data.set_grid_size(13, 13)
+    yolo.set_image_size(*train_data.image_size)
     yolo.set_grid_size(*train_data.grid_size)
 
     yolo.eval()
+
+    dataloader = DataLoader(dataset=val_data,
+                            batch_size=1,
+                            shuffle=True,
+                            num_workers=NUM_WORKERS)
 
     torch.random.manual_seed(12345)
     np.random.seed(12345)
@@ -535,7 +543,7 @@ def main():
                     #     threshold = float(input('Input a threshold:'))
                     # except:
                     #     threshold = 0.
-                    threshold = 0.1
+                    threshold = 0.3
 
                     annotations = []
                     predictions = yolo(image[np.newaxis])
@@ -549,19 +557,19 @@ def main():
                     for x in range(yolo.grid_size[0]):
                         for y in range(yolo.grid_size[1]):
                             for d in range(yolo.num_anchors):
-                                if torch.sigmoid(predictions[x, y, d, 0]) > threshold:
+                                if predictions[x, y, d, 0] > threshold:
                                     annotation = []
                                     cls = train_data.classes[torch.argmax(predictions[x, y, d, 5:])]
                                     annotation.append(cls)
                                     xywh = torch.zeros(4)
-                                    xywh[0] = (torch.sigmoid(predictions[x, y, d, 1]) + x) / yolo.grid_size[0]
-                                    xywh[1] = (torch.sigmoid(predictions[x, y, d, 2]) + y) / yolo.grid_size[1]
-                                    xywh[2] = (yolo.anchors[d, 0] * torch.exp(predictions[x, y, d, 3]))
-                                    xywh[3] = (yolo.anchors[d, 1] * torch.exp(predictions[x, y, d, 4]))
+                                    xywh[0] = predictions[x, y, d, 1]
+                                    xywh[1] = predictions[x, y, d, 2]
+                                    xywh[2] = predictions[x, y, d, 3]
+                                    xywh[3] = predictions[x, y, d, 4]
                                     xyxy = xywh2xyxy(xywh[np.newaxis]).cpu().numpy()
                                     for i in range(4):
                                         annotation.append(int(xyxy[0, i] * train_data.image_size[i % 2]))
-                                    print(x, y, d, torch.sigmoid(predictions[x, y, d, 0]))
+                                    print(x, y, d, predictions[x, y, d, 0])
                                     name, xmin, ymin, xmax, ymax = annotation
                                     # Draw a bounding box.
                                     color = np.random.uniform(0., 255., size=3)
@@ -576,7 +584,7 @@ def main():
                                                    ymax + base_line),
                                                   color,
                                                   cv2.FILLED)
-                                    cv2.putText(image, '{} {:.2f}'.format(name, torch.sigmoid(predictions[x, y, d, 0])), (xmin, ymax), cv2.FONT_HERSHEY_SIMPLEX, 0.75, 255.-BGR_PIXEL_MEANS, 1)
+                                    cv2.putText(image, '{} {:.2f}'.format(name, predictions[x, y, d, 0]), (xmin, ymax), cv2.FONT_HERSHEY_SIMPLEX, 0.75, 255.-BGR_PIXEL_MEANS, 1)
                     # Convert BGR --> RGB
                     image += BGR_PIXEL_MEANS
                     image = cv2.cvtColor(image.astype(dtype=np.uint8), cv2.COLOR_BGR2RGB)
