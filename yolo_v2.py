@@ -26,18 +26,24 @@ class YOLOv2tiny(nn.Module):
 
         self.num_classes = int(self.blocks[-1]['classes'])
         self.num_features = 5 + self.num_classes
-        self.image_size = int(self.net_info['width']), int(self.net_info['height'])
-        self.downscale_factor = self.get_downscale_factor()
-        self.grid_size = self.get_grid_size()
+        self.channels = int(self.net_info['channels'])
+        self.default_image_size = int(self.net_info['width']), int(self.net_info['height'])
+        self.image_size = self.default_image_size
+        self.downscale_factor = self.calculate_downscale_factor()
+        self.grid_size = self.calculate_grid_size()
 
         self.build_modules()
 
-        self.anchors = self.get_anchors()
+        self.anchors = self.collect_anchors()
         self.num_anchors = len(self.anchors)
 
     def forward(self, x):
+
+        assert x.dim() == 4
+
         for layer in self.layers:
             x = layer(x)
+
         return x
 
     def loss(self, predictions, targets):
@@ -123,10 +129,7 @@ class YOLOv2tiny(nn.Module):
             start = time()
             if multi_scale:
                 random_size = np.random.randint(10, 20) * self.downscale_factor
-                train_data.set_image_size(*[random_size] * 2)
-                train_data.set_grid_size(*[int(random_size / self.downscale_factor)] * 2)
-                self.set_image_size(*train_data.image_size)
-                self.set_grid_size(*train_data.grid_size)
+                self.set_image_size(random_size, random_size, dataset=train_data)
             for i, (images, targets) in enumerate(train_dataloader, 1):
                 # image = images[0].permute(1, 2, 0).numpy()
                 # image += BGR_PIXEL_MEANS
@@ -153,8 +156,8 @@ class YOLOv2tiny(nn.Module):
             train_loss.append(np.mean(batch_loss))
             progress = '=' * (PRINT_LINE_LEN + 1)
             if val_data is not None:
-                self.set_grid_size(13, 13)
-                val_loss.append(self.calculate_loss(val_data, batch_size))
+                self.set_image_size(*self.default_image_size)
+                val_loss.append(self.calculate_loss(val_data, 2 * batch_size))
                 end = time()
                 string = 'Epoch: [{}/{}] |{}| [{}/{}] '.format(epoch, epochs, progress, i, len(train_dataloader))
                 string += 'Training Loss: {:.6f} Validation Loss: {:.6f} Duration: {:.1f}s'.format(train_loss[-1],
@@ -173,17 +176,20 @@ class YOLOv2tiny(nn.Module):
         return train_loss, val_loss
 
     def set_grid_size(self, x, y):
+
+        assert isinstance(x, int)
+        assert isinstance(y, int)
+
         self.grid_size = x, y
         for layer in self.detection_layers:
             layer.grid_size = x, y
 
-    def set_image_size(self, x, y):
-        self.image_size = x, y
-
     def save_model(self, name):
+
         pickle.dump(self, open(name, 'wb'), protocol=pickle.HIGHEST_PROTOCOL)
 
-    def calculate_loss(self, data, batch_size, fraction=0.2):
+    def calculate_loss(self, data, batch_size, fraction=0.05):
+
         val_dataloader = DataLoader(dataset=data,
                                     batch_size=batch_size,
                                     shuffle=True,
@@ -202,8 +208,9 @@ class YOLOv2tiny(nn.Module):
         return np.mean(losses)
 
     def parse_cfg(self, file):
+
         file = open(file, 'r')
-        lines = file.read().split('\n')  # store the lines in a list
+        lines = file.read().split('\n')
         lines = [l for l in lines if len(l) > 0]
         lines = [l for l in lines if l[0] != '#']
         lines = [l.rstrip().lstrip() for l in lines]
@@ -212,7 +219,7 @@ class YOLOv2tiny(nn.Module):
         self.blocks = []
 
         for line in lines:
-            if line[0] == '[':  # This marks the start of a new block
+            if line[0] == '[':
                 if len(block) > 0:
                     self.blocks.append(block)
                     block = {}
@@ -228,23 +235,22 @@ class YOLOv2tiny(nn.Module):
         return self.blocks
 
     def build_modules(self):
+
         self.layers = nn.ModuleList()
 
-        index = 0  # indexing blocks helps with implementing route  layers (skip connections)
-        prev_filters = 3
+        index = 0
+        prev_filters = self.channels
         output_filters = []
 
         for block in self.blocks:
             module = nn.Sequential()
 
-            # If it's a convolutional layer
             if block['type'] == 'convolutional':
-                # Get the info about the layer
                 activation = block['activation']
                 try:
                     batch_normalize = bool(block['batch_normalize'])
                     bias = False
-                except:
+                except KeyError:
                     batch_normalize = False
                     bias = True
 
@@ -258,17 +264,13 @@ class YOLOv2tiny(nn.Module):
                 else:
                     pad = 0
 
-                # Add the convolutional layer
                 conv_layer = nn.Conv2d(prev_filters, filters, kernel_size, stride, pad, bias=bias)
                 module.add_module('conv_{0}'.format(index), conv_layer)
 
-                # Add the Batch Norm Layer
                 if batch_normalize:
                     bn_layer = nn.BatchNorm2d(filters)
                     module.add_module('batch_norm_{0}'.format(index), bn_layer)
 
-                # Check the activation.
-                # It is either Linear or a Leaky ReLU for YOLO
                 if activation == 'leaky':
                     activation_layer = nn.LeakyReLU(negative_slope=0.1, inplace=True)
                     module.add_module('leaky_{0}'.format(index), activation_layer)
@@ -288,10 +290,7 @@ class YOLOv2tiny(nn.Module):
             elif block['type'] == 'route':
                 block['layers'] = block['layers'].split(',')
 
-                # Start  of a route
                 start = int(block['layers'][0])
-
-                # end, if there exists one.
                 try:
                     end = int(block['layers'][1])
                 except IndexError:
@@ -312,7 +311,7 @@ class YOLOv2tiny(nn.Module):
 
             elif block['type'] == 'shortcut':
                 shortcut_layer = EmptyLayer()
-                module.add_module()
+                module.add_module('shortcut_{0}'.format(index), shortcut_layer)
 
             elif block['type'] == 'maxpool':
                 stride = int(block['stride'])
@@ -385,12 +384,12 @@ class YOLOv2tiny(nn.Module):
                 model = self.module_list[i]
                 try:
                     batch_normalize = int(self.blocks[i + 1]["batch_normalize"])
-                except:
+                except KeyError:
                     batch_normalize = 0
 
                 conv = model[0]
 
-                if (batch_normalize):
+                if batch_normalize:
                     bn = model[1]
 
                     # Get the number of weights of Batch Norm Layer
@@ -445,7 +444,8 @@ class YOLOv2tiny(nn.Module):
                 conv_weights = conv_weights.view_as(conv.weight.data)
                 conv.weight.data.copy_(conv_weights)
 
-    def get_downscale_factor(self):
+    def calculate_downscale_factor(self):
+
         downscale_factor = 1.
         for block in self.blocks:
             if block['type'] == 'maxpool':
@@ -454,21 +454,42 @@ class YOLOv2tiny(nn.Module):
                 div = (1. - size) / stride + 1.
                 if div > 0:
                     downscale_factor /= div
+
         return int(downscale_factor)
 
-    def get_anchors(self):
+    def collect_anchors(self):
+
         anchors = []
         for layer in self.detection_layers:
             anchors.append(layer.anchors)
+
         return torch.cat(anchors)
 
-    def get_grid_size(self):
+    def calculate_grid_size(self):
+
         width, height = self.image_size
 
         assert width % self.downscale_factor == 0
         assert height % self.downscale_factor == 0
 
         return int(width / self.downscale_factor), int(height / self.downscale_factor)
+
+    def set_image_size(self, x, y, dataset=None):
+
+        assert isinstance(x, int)
+        assert isinstance(y, int)
+
+        grid_size = int(x / self.downscale_factor), int(y / self.downscale_factor)
+        self.image_size = x, y
+        self.set_grid_size(*grid_size)
+        if dataset is not None:
+            if isinstance(dataset, (list, tuple)):
+                for d in dataset:
+                    d.set_image_size(x, y)
+                    d.set_grid_size(*grid_size)
+            else:
+                dataset.set_image_size(x, y)
+                dataset.set_grid_size(*grid_size)
 
 
 def main():
@@ -507,25 +528,24 @@ def main():
     optimizer = optim.SGD(model.parameters(), lr=5e-5, momentum=0.98)
     # optimizer = optim.Adam(model.parameters())
 
-    # model.fit(train_data=train_data,
-    #           val_data=val_data,
-    #           optimizer=optimizer,
-    #           batch_size=batch_size,
-    #           epochs=500,
-    #           verbose=True,
-    #           multi_scale=False,
-    #           checkpoint_frequency=100)
+    model.fit(train_data=train_data,
+              val_data=val_data,
+              optimizer=optimizer,
+              batch_size=batch_size,
+              epochs=500,
+              verbose=True,
+              multi_scale=True,
+              checkpoint_frequency=100)
 
     # yolo = model
     yolo = pickle.load(open('yolov2_tiny_500.pkl', 'rb'))
-    train_data.set_image_size(416, 416)
-    train_data.set_grid_size(13, 13)
-    yolo.set_image_size(*train_data.image_size)
-    yolo.set_grid_size(*train_data.grid_size)
+    val_data.set_image_size(20*32, 20*32)
+    image_size = 416, 416
+    yolo.set_image_size(image_size, dataset=train_data)
 
     yolo.eval()
 
-    dataloader = DataLoader(dataset=val_data,
+    dataloader = DataLoader(dataset=train_data,
                             batch_size=1,
                             shuffle=True,
                             num_workers=NUM_WORKERS)

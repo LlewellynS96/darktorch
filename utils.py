@@ -1,6 +1,6 @@
 import os
 import torch
-import xml.etree.ElementTree as ET
+import xml.etree.ElementTree as Et
 import numpy as np
 import cv2
 from torch.utils.data import Dataset
@@ -8,7 +8,7 @@ from torch.utils.data import Dataset
 
 BGR_PIXEL_MEANS = np.array([103.939, 116.779, 123.68])
 PRINT_LINE_LEN = 100
-NUM_WORKERS = 4
+NUM_WORKERS = 0
 
 
 class PascalDatasetYOLO(Dataset):
@@ -49,6 +49,7 @@ class PascalDatasetYOLO(Dataset):
                         self.images.append(image_desc[0])
 
     def __getitem__(self, index):
+
         img = self.images[index]
         image = cv2.imread(os.path.join(self.images_dir, img + '.jpg'), 1)
         annotations = self.get_annotations(img)
@@ -86,14 +87,17 @@ class PascalDatasetYOLO(Dataset):
         image = image.permute(2, 0, 1)
         target = torch.tensor(target)
         target = target.permute(2, 0, 1)
+
         return image, target
 
     def __len__(self):
+
         return len(self.images)
 
     def get_annotations(self, img):
+
         file = os.path.join(self.annotations_dir, img + '.xml')
-        tree = ET.parse(file)
+        tree = Et.parse(file)
         root = tree.getroot()
 
         annotations = []
@@ -103,17 +107,17 @@ class PascalDatasetYOLO(Dataset):
         height = int(size.find('height').text)
 
         for obj in root.findall('object'):
-            bndbox = obj.find('bndbox')
+            bbox = obj.find('bndbox')
             name = obj.find('name').text
             truncated = int(obj.find('truncated').text)
             difficult = int(obj.find('difficult').text)
             # Get ground truth bounding boxes.
             # NOTE: The creators of the Pascal VOC dataset started counting at 1,
             # and thus the indices have to be corrected.
-            xmin = (float(bndbox.find('xmin').text) - 1.) / width
-            xmax = (float(bndbox.find('xmax').text) - 1.) / width
-            ymin = (float(bndbox.find('ymin').text) - 1.) / height
-            ymax = (float(bndbox.find('ymax').text) - 1.) / height
+            xmin = (float(bbox.find('xmin').text) - 1.) / width
+            xmax = (float(bbox.find('xmax').text) - 1.) / width
+            ymin = (float(bbox.find('ymin').text) - 1.) / height
+            ymax = (float(bbox.find('ymax').text) - 1.) / height
             annotations.append((name, xmin, ymin, xmax, ymax, truncated, difficult))
 
         return annotations
@@ -145,7 +149,6 @@ def nms(boxes, scores, overlap=0.5, top_k=200):
     Return:
         The indices of the kept boxes with respect to num_priors.
     """
-
     keep = scores.new(scores.size(0)).zero_().long()
     if boxes.numel() == 0:
         return keep
@@ -166,7 +169,6 @@ def nms(boxes, scores, overlap=0.5, top_k=200):
     count = 0
     while idx.numel() > 0:
         i = idx[-1]  # index of current largest val
-        # keep.append(i)
         keep[count] = i
         count += 1
         if idx.size(0) == 1:
@@ -195,6 +197,7 @@ def nms(boxes, scores, overlap=0.5, top_k=200):
         iou = inter / union  # store result in iou
         # keep only elements with an IoU <= overlap
         idx = idx[iou.le(overlap)]
+
     return keep
 
 
@@ -219,8 +222,8 @@ def jaccard(boxes_a, boxes_b):
     """
     assert boxes_a.shape[1] == 4
     assert boxes_b.shape[1] == 4
-    assert type(boxes_a) == torch.Tensor
-    assert type(boxes_a) == torch.Tensor
+    assert isinstance(boxes_a, torch.Tensor)
+    assert isinstance(boxes_b, torch.Tensor)
 
     # top left
     tl = torch.max(boxes_a[:, None, :2], boxes_b[:, :2])
@@ -231,7 +234,7 @@ def jaccard(boxes_a, boxes_b):
     area_b = torch.prod(boxes_b[:, 2:] - boxes_b[:, :2], 1)
 
     en = (tl < br).type(tl.type()).prod(dim=2)
-    area_i = torch.prod(br - tl, 2) * en # * ((tl < br).all())
+    area_i = torch.prod(br - tl, 2) * en
 
     area_a = torch.clamp(area_a, min=0)
 
@@ -241,6 +244,7 @@ def jaccard(boxes_a, boxes_b):
 
 
 def logit(x):
+
     if x == 1.:
         return np.inf
     elif x == 0:
@@ -252,6 +256,7 @@ def logit(x):
 
 
 def xywh2xyxy(xywh):
+
     xyxy = torch.zeros_like(xywh)
     half = xywh[:, 2:] / 2.
     xyxy[:, :2] = xywh[:, :2] - half
@@ -261,6 +266,7 @@ def xywh2xyxy(xywh):
 
 
 def read_classes(file):
+
     file = open(file, 'r')
     lines = file.read().split('\n')
     lines = [l for l in lines if len(l) > 0]
