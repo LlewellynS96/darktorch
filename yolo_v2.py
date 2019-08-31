@@ -360,10 +360,10 @@ class YOLOv2tiny(nn.Module):
 
         return self.net_info, self.layers
 
-    def load_weights(self, weightfile):
+    def load_weights(self, file):
 
         # Open the weights file
-        f = open(weightfile, "rb")
+        f = open(file, "rb")
 
         # The rest of the values are the weights
         # Let's load them up
@@ -604,7 +604,7 @@ def main():
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     batch_size = 10
 
-    model = YOLOv2tiny(model='models/yolov2-tiny.cfg',
+    model = YOLOv2tiny(model='models/yolov2-tiny-voc.cfg',
                        device=device)
     model = model.to(device)
 
@@ -632,14 +632,16 @@ def main():
 
     optimizer = optim.SGD(model.parameters(), lr=5e-5, momentum=0.98)
 
-    model.fit(train_data=train_data,
-              val_data=val_data,
-              optimizer=optimizer,
-              batch_size=batch_size,
-              epochs=1,
-              verbose=True,
-              multi_scale=True,
-              checkpoint_frequency=100)
+    # model.fit(train_data=train_data,
+    #           val_data=val_data,
+    #           optimizer=optimizer,
+    #           batch_size=batch_size,
+    #           epochs=1,
+    #           verbose=True,
+    #           multi_scale=True,
+    #           checkpoint_frequency=100)
+
+    model.load_weights()
 
     yolo = model
     # yolo = pickle.load(open('yolov2_tiny_500.pkl', 'rb'))
