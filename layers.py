@@ -25,26 +25,26 @@ class YOLOv2Layer(nn.Module):
         x = x.contiguous().view(-1, self.num_features)
 
         # Convert t_o --> IoU
-        x[:, 0] = torch.sigmoid(x[:, 0])
+        x[:, 4] = torch.sigmoid(x[:, 4])
 
         # Convert t_x and t_y --> x and y (ignoring the offset).
-        x[:, 1:3] = torch.sigmoid(x[:, 1:3])
+        x[:, :4] = torch.sigmoid(x[:, :4])
         # Add the offset.
         offsets = torch.arange(0, int(x.shape[0] / in_shape[0]), device=self.device)
         h_offsets = offsets / self.grid_size[0] / self.num_anchors
         v_offsets = (offsets - (h_offsets * self.grid_size[0] * self.num_anchors)) / self.num_anchors
         h_offsets = h_offsets.repeat(in_shape[0])
         v_offsets = v_offsets.repeat(in_shape[0])
-        x[:, 1] += h_offsets.float()
-        x[:, 2] += v_offsets.float()
-        x[:, 1] /= self.grid_size[0]
-        x[:, 2] /= self.grid_size[1]
+        x[:, 0] += h_offsets.float()
+        x[:, 1] += v_offsets.float()
+        x[:, 0] /= self.grid_size[0]
+        x[:, 1] /= self.grid_size[1]
 
         # Convert t_w and t_h --> w and h.
         anchors = self.anchors.repeat(in_shape[0] * self.grid_size[0] * self.grid_size[1], 1)
 
-        x[:, 3] = anchors[:, 0] * torch.exp(x[:, 3])
-        x[:, 4] = anchors[:, 1] * torch.exp(x[:, 4])
+        x[:, 2] = anchors[:, 0] * torch.exp(x[:, 2])
+        x[:, 3] = anchors[:, 1] * torch.exp(x[:, 3])
         # Add softmax to class probabilities.
         # NB!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
         x[:, 5:] = torch.sigmoid(x[:, 5:])
@@ -70,26 +70,26 @@ class YOLOv3Layer(nn.Module):
         x = x.contiguous().view(-1, self.num_features)
 
         # Convert t_o --> IoU
-        x[:, 0] = torch.sigmoid(x[:, 0])
+        x[:, 4] = torch.sigmoid(x[:, 4])
 
         # Convert t_x and t_y --> x and y (ignoring the offset).
-        x[:, 1:3] = torch.sigmoid(x[:, 1:3])
+        x[:, :4] = torch.sigmoid(x[:, :4])
         # Add the offset.
         offsets = torch.arange(0, int(x.shape[0] / in_shape[0]), device=self.device)
         h_offsets = offsets / self.grid_size[0] / self.num_anchors
         v_offsets = (offsets - (h_offsets * self.grid_size[0] * self.num_anchors)) / self.num_anchors
         h_offsets = h_offsets.repeat(in_shape[0])
         v_offsets = v_offsets.repeat(in_shape[0])
-        x[:, 1] += h_offsets.float()
-        x[:, 2] += v_offsets.float()
-        x[:, 1] /= self.grid_size[0]
-        x[:, 2] /= self.grid_size[1]
+        x[:, 0] += h_offsets.float()
+        x[:, 1] += v_offsets.float()
+        x[:, 0] /= self.grid_size[0]
+        x[:, 1] /= self.grid_size[1]
 
         # Convert t_w and t_h --> w and h.
         anchors = self.anchors.repeat(in_shape[0] * self.grid_size[0] * self.grid_size[1], 1)
 
-        x[:, 3] = anchors[:, 0] * torch.exp(x[:, 3])
-        x[:, 4] = anchors[:, 1] * torch.exp(x[:, 4])
+        x[:, 2] = anchors[:, 0] * torch.exp(x[:, 2])
+        x[:, 3] = anchors[:, 1] * torch.exp(x[:, 3])
         # Add softmax to class probabilities.
         # NB!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
         x[:, 5:] = torch.sigmoid(x[:, 5:])

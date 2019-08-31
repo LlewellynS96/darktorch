@@ -5,9 +5,10 @@ import torchsummary
 import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader
 from torch import optim
+from torchvision import transforms
 from time import time
 from dataset import PascalDatasetYOLO
-from utils import PRINT_LINE_LEN, NUM_WORKERS
+from utils import PRINT_LINE_LEN, NUM_WORKERS, RGB_PIXEL_MEANS, BGR_PIXEL_MEANS
 from utils import jaccard, xywh2xyxy, non_maximum_suppression, to_numpy_image, add_bbox_to_image
 from layers import *
 
@@ -67,23 +68,23 @@ class YOLOv2tiny(nn.Module):
         predictions = predictions.contiguous().view(-1, self.num_features)
 
         # Create a mask and compile a tensor only containing detectors that are responsible for objects.
-        obj_mask = torch.nonzero(targets[:, 0]).flatten()
+        obj_mask = torch.nonzero(targets[:, 4]).flatten()
 
         if obj_mask.numel() > 0:
             # Convert t_w and t_h --> w and h.
-            predictions_xyxy = xywh2xyxy(predictions[:, 1:5])
-            targets_xyxy = xywh2xyxy(targets[obj_mask, 1:5])
+            predictions_xyxy = xywh2xyxy(predictions[:, :4])
+            targets_xyxy = xywh2xyxy(targets[obj_mask, :4])
 
             ious = jaccard(predictions_xyxy, targets_xyxy)
             ious, _ = torch.max(ious, dim=1)
 
-            loss['object'] = lambda_obj * nn.MSELoss(reduction='sum')(predictions[obj_mask, 0], ious[obj_mask])
-            loss['coord'] = nn.MSELoss(reduction='sum')(predictions[obj_mask, 1], targets[obj_mask, 1])
-            loss['coord'] += nn.MSELoss(reduction='sum')(predictions[obj_mask, 2], targets[obj_mask, 2])
+            loss['object'] = lambda_obj * nn.MSELoss(reduction='sum')(predictions[obj_mask, 4], ious[obj_mask])
+            loss['coord'] = nn.MSELoss(reduction='sum')(predictions[obj_mask, 0], targets[obj_mask, 0])
+            loss['coord'] += nn.MSELoss(reduction='sum')(predictions[obj_mask, 1], targets[obj_mask, 1])
+            loss['coord'] += nn.MSELoss(reduction='sum')(torch.sqrt(predictions[obj_mask, 2]),
+                                                         torch.sqrt(targets[obj_mask, 2]))
             loss['coord'] += nn.MSELoss(reduction='sum')(torch.sqrt(predictions[obj_mask, 3]),
                                                          torch.sqrt(targets[obj_mask, 3]))
-            loss['coord'] += nn.MSELoss(reduction='sum')(torch.sqrt(predictions[obj_mask, 4]),
-                                                         torch.sqrt(targets[obj_mask, 4]))
             # Multiply by lambda_coord
             loss['coord'] *= lambda_coord
             # Divide by the number of separate loss components.
@@ -94,16 +95,16 @@ class YOLOv2tiny(nn.Module):
             threshold = 0.6
             noobj_mask = torch.nonzero(ious > threshold).squeeze()
             targets[noobj_mask, 0] = 2.
-            noobj_mask = torch.nonzero(targets[:, 0] == 0.).squeeze()
+            noobj_mask = torch.nonzero(targets[:, 4] == 0.).squeeze()
 
-            loss['no_object'] = lambda_noobj * nn.MSELoss(reduction='sum')(predictions[noobj_mask, 0],
-                                                                           targets[noobj_mask, 0])
+            loss['no_object'] = lambda_noobj * nn.MSELoss(reduction='sum')(predictions[noobj_mask, 4],
+                                                                           targets[noobj_mask, 4])
         else:
             loss['object'] = torch.tensor([0.], device=self.device)
             loss['coord'] = torch.tensor([0.], device=self.device)
             loss['class'] = torch.tensor([0.], device=self.device)
 
-            loss['no_object'] = lambda_noobj * nn.MSELoss(reduction='sum')(predictions[:, 0], targets[:, 0])
+            loss['no_object'] = lambda_noobj * nn.MSELoss(reduction='sum')(predictions[:, 4], targets[:, 4])
 
         loss['object'] /= batch_size
         loss['coord'] /= batch_size
@@ -133,11 +134,13 @@ class YOLOv2tiny(nn.Module):
                 random_size = np.random.randint(10, 20) * self.downscale_factor
                 self.set_image_size(random_size, random_size, dataset=train_data)
             for i, (images, targets) in enumerate(train_dataloader, 1):
-                # image = images[0].permute(1, 2, 0).numpy()
-                # image += BGR_PIXEL_MEANS
+                image = images[0].permute(1, 2, 0).numpy()
+                image += RGB_PIXEL_MEANS
+                image *= 255.
+                image = image.astype(dtype=np.uint8)
                 # image = cv2.cvtColor(image.astype(dtype=np.uint8), cv2.COLOR_BGR2RGB)
-                # plt.imshow(image)
-                # plt.show()
+                plt.imshow(image)
+                plt.show()
                 images = images.to(self.device)
                 targets = targets.to(self.device)
                 optimizer.zero_grad()
@@ -362,31 +365,28 @@ class YOLOv2tiny(nn.Module):
 
     def load_weights(self, file):
 
-        # Open the weights file
         f = open(file, "rb")
-
-        # The rest of the values are the weights
-        # Let's load them up
-        weights = np.fromfile(f, offset=4*5, dtype=np.float32)
+        weights = np.fromfile(f, offset=16, dtype=np.float32)
 
         ptr = 0
-        for i in range(len(self.module_list)):
-            module_type = self.blocks[i + 1]["type"]
+        for i in range(len(self.layers)):
+
+            module_type = self.blocks[i]["type"]
 
             if module_type == "convolutional":
-                model = self.module_list[i]
+                module = self.layers[i]
                 try:
-                    batch_normalize = int(self.blocks[i + 1]["batch_normalize"])
+                    batch_normalize = int(self.blocks[i]["batch_normalize"])
                 except KeyError:
                     batch_normalize = 0
 
-                conv = model[0]
+                conv_layer = module[0]
 
                 if batch_normalize:
-                    bn = model[1]
+                    bn_layer = module[1]
 
                     # Get the number of weights of Batch Norm Layer
-                    num_bn_biases = bn.bias.numel()
+                    num_bn_biases = bn_layer.bias.numel()
 
                     # Load the weights
                     bn_biases = torch.from_numpy(weights[ptr:ptr + num_bn_biases])
@@ -402,40 +402,79 @@ class YOLOv2tiny(nn.Module):
                     ptr += num_bn_biases
 
                     # Cast the loaded weights into dims of model weights.
-                    bn_biases = bn_biases.view_as(bn.bias.data)
-                    bn_weights = bn_weights.view_as(bn.weight.data)
-                    bn_running_mean = bn_running_mean.view_as(bn.running_mean)
-                    bn_running_var = bn_running_var.view_as(bn.running_var)
+                    bn_biases = bn_biases.view_as(bn_layer.bias.data)
+                    bn_weights = bn_weights.view_as(bn_layer.weight.data)
+                    bn_running_mean = bn_running_mean.view_as(bn_layer.running_mean)
+                    bn_running_var = bn_running_var.view_as(bn_layer.running_var)
 
                     # Copy the data to model
-                    bn.bias.data.copy_(bn_biases)
-                    bn.weight.data.copy_(bn_weights)
-                    bn.running_mean.copy_(bn_running_mean)
-                    bn.running_var.copy_(bn_running_var)
+                    bn_layer.bias.data.copy_(bn_biases)
+                    bn_layer.weight.data.copy_(bn_weights)
+                    bn_layer.running_mean.copy_(bn_running_mean)
+                    bn_layer.running_var.copy_(bn_running_var)
 
                 else:
                     # Number of biases
-                    num_biases = conv.bias.numel()
+                    num_biases = conv_layer.bias.numel()
 
                     # Load the weights
                     conv_biases = torch.from_numpy(weights[ptr: ptr + num_biases])
                     ptr = ptr + num_biases
 
                     # reshape the loaded weights according to the dims of the model weights
-                    conv_biases = conv_biases.view_as(conv.bias.data)
+                    conv_biases = conv_biases.view_as(conv_layer.bias.data)
 
                     # Finally copy the data
-                    conv.bias.data.copy_(conv_biases)
+                    conv_layer.bias.data.copy_(conv_biases)
 
                 # Let us load the weights for the Convolutional layers
-                num_weights = conv.weight.numel()
+                num_weights = conv_layer.weight.numel()
 
                 # Do the same as above for weights
                 conv_weights = torch.from_numpy(weights[ptr:ptr + num_weights])
                 ptr = ptr + num_weights
 
-                conv_weights = conv_weights.view_as(conv.weight.data)
-                conv.weight.data.copy_(conv_weights)
+                conv_weights = conv_weights.view_as(conv_layer.weight.data)
+                conv_layer.weight.data.copy_(conv_weights)
+
+    def save_weights(self, file):
+
+        f = open(file, 'wb')
+
+        header = np.array([0, 0, 1, 0], dtype=np.int32)
+        header.tofile(f)
+
+        # Now, let us save the weights
+        for i in range(len(self.layers)):
+            module_type = self.blocks[i]["type"]
+
+            if module_type == "convolutional":
+                module = self.layers[i]
+                try:
+                    batch_normalize = int(self.blocks[i]["batch_normalize"])
+                except:
+                    batch_normalize = 0
+
+                conv_layer = module[0]
+
+                if batch_normalize:
+                    bn_layer = module[1]
+
+                    # If the parameters are on GPU, convert them back to CPU
+                    # We don't convert the parameter to GPU
+                    # Instead. we copy the parameter and then convert it to CPU
+                    # This is done as weight are need to be saved during training
+                    bn_layer.bias.data.detach().cpu().numpy().tofile(f)
+                    bn_layer.weight.data.detach().cpu().numpy().tofile(f)
+                    bn_layer.running_mean.detach().cpu().numpy().tofile(f)
+                    bn_layer.running_var.detach().cpu().numpy().tofile(f)
+
+
+                else:
+                    conv_layer.bias.data.detach().cpu().numpy().tofile(f)
+
+                # Let us save the weights for the Convolutional layers
+                conv_layer.weight.data.detach().cpu().numpy().tofile(f)
 
     def calculate_downscale_factor(self):
 
@@ -498,14 +537,14 @@ class YOLOv2tiny(nn.Module):
 
             classes = torch.argmax(prediction[:, 5:], dim=-1)
             idx = torch.arange(0, len(prediction))
-            confidence = prediction[:, 0] * prediction[idx, 5 + classes]
+            confidence = prediction[:, 4] * prediction[idx, 5 + classes]
 
             mask = confidence > confidence_threshold
 
             if sum(mask) == 0:
                 continue
 
-            bboxes = prediction[mask, 1:5].clone()
+            bboxes = prediction[mask, :4].clone()
             bboxes = xywh2xyxy(bboxes)
 
             confidence = confidence[mask]
@@ -562,7 +601,7 @@ class YOLOv2tiny(nn.Module):
         with torch.no_grad():
             for i, (images, targets) in enumerate(dataloader):
                 images = images.to(self.device)
-                predictions = self(images)
+                predictions = self(images / 255.)
                 # predictions = targets
                 bboxes, classes, confidences, image_idx = self.process_bboxes(predictions,
                                                                               confidence_threshold=confidence_threshold,
@@ -573,13 +612,16 @@ class YOLOv2tiny(nn.Module):
                         image = to_numpy_image(image)
                         mask = image_idx == idx
                         for bbox, cls, confidence in zip(bboxes[mask], classes[mask], confidences[mask]):
-                            name = dataset.classes[cls]
+                            try:
+                                name = dataset.classes[cls]
+                            except IndexError:
+                                print(1)
                             add_bbox_to_image(image, bbox, confidence, name)
                         plt.imshow(image)
                         plt.show()
 
                 bboxes_.append(bboxes)
-                confidence_.append(confidence)
+                confidence_.append(confidences)
                 classes_.append(classes)
                 image_idx_.append(image_idx)
 
@@ -596,6 +638,30 @@ class YOLOv2tiny(nn.Module):
                    torch.tensor([], device=self.device), \
                    torch.tensor([], device=self.device)
 
+    def freeze(self, freeze_last_layer=True):
+        last_set = False
+        for layer in reversed(self.layers):
+            if not last_set and not freeze_last_layer:
+                for param in layer.parameters():
+                    param.requires_grad = True
+                    last_set = True
+            else:
+                for param in layer.parameters():
+                    param.requires_grad = False
+
+    def unfreeze(self):
+        for param in self.parameters():
+            param.requires_grad = True
+
+    def get_trainable_parameters(self):
+
+        trainable_parameters = []
+        for param in self.parameters():
+            if param.requires_grad:
+                trainable_parameters.append(param)
+
+        return trainable_parameters
+
 
 def main():
     torch.random.manual_seed(12345)
@@ -604,44 +670,58 @@ def main():
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     batch_size = 10
 
-    model = YOLOv2tiny(model='models/yolov2-tiny-voc.cfg',
+    model = YOLOv2tiny(model='models/yolov2-tiny-custom.cfg',
                        device=device)
     model = model.to(device)
 
     torchsummary.summary(model, (3, 416, 416))
 
+    train_transforms = transforms.Compose([transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.2),
+                                           transforms.ToTensor(),
+                                           transforms.Normalize(RGB_PIXEL_MEANS, [1., 1., 1.])]
+                                          )
+
+    val_transforms = transforms.Compose([transforms.Normalize(RGB_PIXEL_MEANS, [1., 1., 1.]),
+                                         transforms.ToTensor()]
+                                        )
+
     train_data = PascalDatasetYOLO(root_dir='../data/VOC2012/',
-                                   classes='../data/VOC2012/voc.names',
+                                   classes='../data/VOC2012/voc-custom.names',
                                    dataset='train',
-                                   skip_truncated=False,
+                                   skip_truncated=True,
                                    skip_difficult=True,
                                    image_size=model.image_size,
                                    grid_size=model.grid_size,
-                                   anchors=model.anchors
+                                   anchors=model.anchors,
+                                   transforms=train_transforms
                                    )
 
     val_data = PascalDatasetYOLO(root_dir='../data/VOC2012/',
-                                 classes='../data/VOC2012/voc.names',
+                                 classes='../data/VOC2012/voc-custom.names',
                                  dataset='val',
                                  skip_truncated=True,
                                  skip_difficult=True,
                                  image_size=model.image_size,
                                  grid_size=model.grid_size,
-                                 anchors=model.anchors
+                                 anchors=model.anchors,
+                                 transforms=val_transforms
                                  )
 
-    optimizer = optim.SGD(model.parameters(), lr=5e-5, momentum=0.98)
+    # model.load_weights('models/yolov2-tiny-voc.weights')
+    # model.freeze(freeze_last_layer=False)
 
-    # model.fit(train_data=train_data,
-    #           val_data=val_data,
-    #           optimizer=optimizer,
-    #           batch_size=batch_size,
-    #           epochs=1,
-    #           verbose=True,
-    #           multi_scale=True,
-    #           checkpoint_frequency=100)
+    optimizer = optim.SGD(model.get_trainable_parameters(), lr=5e-5, momentum=0.98)
 
-    model.load_weights()
+    model.fit(train_data=train_data,
+              val_data=val_data,
+              optimizer=optimizer,
+              batch_size=batch_size,
+              epochs=500,
+              verbose=True,
+              multi_scale=True,
+              checkpoint_frequency=10)
+
+    model.save_weights('models/yolov2-tiny-voc-custom.weights')
 
     yolo = model
     # yolo = pickle.load(open('yolov2_tiny_500.pkl', 'rb'))
@@ -653,8 +733,8 @@ def main():
     np.random.seed(12345)
 
     yolo.predict(dataset=train_data,
-                 confidence_threshold=0.3,
-                 overlap_threshold=0.5,
+                 confidence_threshold=0.5,
+                 overlap_threshold=0.4,
                  show=True)
 
 

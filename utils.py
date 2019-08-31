@@ -3,6 +3,8 @@ import numpy as np
 import cv2
 
 BGR_PIXEL_MEANS = np.array([103.939, 116.779, 123.68])
+RGB_PIXEL_MEANS = np.array([123.68, 116.779, 103.939]) / 255.
+
 PRINT_LINE_LEN = 100
 NUM_WORKERS = 0
 
