@@ -6,7 +6,9 @@ import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader
 from torch import optim
 from time import time
-from utils import BGR_PIXEL_MEANS, PRINT_LINE_LEN, NUM_WORKERS, PascalDatasetYOLO, jaccard, xywh2xyxy
+from utils import PRINT_LINE_LEN, NUM_WORKERS
+from utils import PascalDatasetYOLO
+from utils import xywh2xyxy, non_maximum_suppression, read_classes, to_numpy_image, add_bbox_to_image
 from layers import *
 
 
@@ -491,6 +493,67 @@ class YOLOv2tiny(nn.Module):
                 dataset.set_image_size(x, y)
                 dataset.set_grid_size(*grid_size)
 
+    def process_bboxes(self, predictions, threshold=0.01, nms=True):
+
+        predictions = predictions.permute(0, 2, 3, 1)
+
+        images_ = []
+        bboxes_ = []
+        confidence_ = []
+        classes_ = []
+
+        for i, prediction in enumerate(predictions):
+            prediction = prediction.contiguous().view(-1, self.num_features)
+
+            classes = torch.argmax(prediction[:, 5:], dim=-1)
+            idx = torch.arange(0, len(prediction))
+            confidence = prediction[:, 0] * prediction[idx, 5 + classes]
+
+            mask = confidence > threshold
+
+            if sum(mask) == 0:
+                continue
+
+            bboxes = prediction[mask, 1:5].clone()
+            bboxes = xywh2xyxy(bboxes)
+
+            confidence = confidence[mask]
+            classes = classes[mask]
+
+            if nms:
+                cls = torch.unique(classes)
+                for c in cls:
+                    cls_mask = (classes == c).nonzero().flatten()
+                    mask = non_maximum_suppression(bboxes[cls_mask], confidence[cls_mask], overlap=0.5)
+                    bboxes_.append(bboxes[cls_mask][mask])
+                    confidence_.append(confidence[cls_mask][mask])
+                    classes_.append(classes[cls_mask][mask])
+                    images_.append(torch.ones(len(bboxes[cls_mask][mask]), device=self.device) * i)
+            else:
+                bboxes_.append(bboxes)
+                confidence_.append(confidence)
+                classes_.append(classes)
+                images_.append(torch.ones(len(bboxes)) * i)
+
+        if len(bboxes_) > 0:
+            bboxes = torch.cat(bboxes_).view(-1, 4)
+            classes = torch.cat(classes_).flatten()
+            confidence = torch.cat(confidence_).flatten()
+            images = torch.cat(images_).flatten()
+
+            bboxes[:, 0::2] *= self.image_size[0]
+            bboxes[:, 1::2] *= self.image_size[1]
+
+            bboxes = torch.clamp(bboxes, min=0, max=self.image_size[0])
+            bboxes = torch.clamp(bboxes, min=0, max=self.image_size[1])
+
+            return bboxes, classes, confidence, images
+        else:
+            return torch.tensor([], device=self.device), \
+                   torch.tensor([], device=self.device), \
+                   torch.tensor([], device=self.device), \
+                   torch.tensor([], device=self.device)
+
 
 def main():
     torch.random.manual_seed(12345)
@@ -503,13 +566,13 @@ def main():
                        device=device)
     model = model.to(device)
 
-    # torchsummary.summary(model, (3, 416, 416))
+    torchsummary.summary(model, (3, 416, 416))
 
     train_data = PascalDatasetYOLO(root_dir='../data/VOC2012/',
                                    classes='../data/VOC2012/voc.names',
                                    dataset='train',
                                    skip_truncated=False,
-                                   skip_difficult=False,
+                                   skip_difficult=True,
                                    image_size=model.image_size,
                                    grid_size=model.grid_size,
                                    anchors=model.anchors
@@ -518,139 +581,57 @@ def main():
     val_data = PascalDatasetYOLO(root_dir='../data/VOC2012/',
                                  classes='../data/VOC2012/voc.names',
                                  dataset='val',
-                                 skip_truncated=False,
+                                 skip_truncated=True,
                                  skip_difficult=True,
                                  image_size=model.image_size,
                                  grid_size=model.grid_size,
                                  anchors=model.anchors
                                  )
 
+    class_labels = read_classes('../data/VOC2012/voc.names')
+
     optimizer = optim.SGD(model.parameters(), lr=5e-5, momentum=0.98)
     # optimizer = optim.Adam(model.parameters())
 
-    model.fit(train_data=train_data,
-              val_data=val_data,
-              optimizer=optimizer,
-              batch_size=batch_size,
-              epochs=500,
-              verbose=True,
-              multi_scale=True,
-              checkpoint_frequency=100)
+    # model.fit(train_data=train_data,
+    #           val_data=val_data,
+    #           optimizer=optimizer,
+    #           batch_size=batch_size,
+    #           epochs=500,
+    #           verbose=True,
+    #           multi_scale=True,
+    #           checkpoint_frequency=100)
 
     # yolo = model
     yolo = pickle.load(open('yolov2_tiny_500.pkl', 'rb'))
-    val_data.set_image_size(20*32, 20*32)
     image_size = 416, 416
-    yolo.set_image_size(image_size, dataset=train_data)
+    yolo.set_image_size(*image_size, dataset=(train_data, val_data))
 
-    yolo.eval()
-
-    dataloader = DataLoader(dataset=train_data,
-                            batch_size=1,
+    dataloader = DataLoader(dataset=val_data,
+                            batch_size=batch_size,
                             shuffle=True,
                             num_workers=NUM_WORKERS)
+
+    yolo.eval()
 
     torch.random.manual_seed(12345)
     np.random.seed(12345)
 
     with torch.no_grad():
-        for epoch in range(1):
-            for i, data in enumerate(dataloader):
-                images, targets = data
-                images = images.to(device)
-                for image, target in zip(images, targets):
-                    # try:
-                    #     threshold = float(input('Input a threshold:'))
-                    # except:
-                    #     threshold = 0.
-                    threshold = 0.3
-
-                    annotations = []
-                    predictions = yolo(image[np.newaxis])
-                    # predictions = target[np.newaxis]
-                    image = image.cpu().numpy().astype(dtype=np.float64)
-                    image = np.ascontiguousarray(image.transpose(1, 2, 0))
-                    predictions = predictions.permute(0, 2, 3, 1)
-                    predictions = predictions[0]
-                    predictions = predictions.reshape(yolo.grid_size[0], yolo.grid_size[1], yolo.num_anchors, yolo.num_features)
-                    print('-' * 20)
-                    for x in range(yolo.grid_size[0]):
-                        for y in range(yolo.grid_size[1]):
-                            for d in range(yolo.num_anchors):
-                                if predictions[x, y, d, 0] > threshold:
-                                    annotation = []
-                                    cls = train_data.classes[torch.argmax(predictions[x, y, d, 5:])]
-                                    annotation.append(cls)
-                                    xywh = torch.zeros(4)
-                                    xywh[0] = predictions[x, y, d, 1]
-                                    xywh[1] = predictions[x, y, d, 2]
-                                    xywh[2] = predictions[x, y, d, 3]
-                                    xywh[3] = predictions[x, y, d, 4]
-                                    xyxy = xywh2xyxy(xywh[np.newaxis]).cpu().numpy()
-                                    for i in range(4):
-                                        annotation.append(int(xyxy[0, i] * train_data.image_size[i % 2]))
-                                    print(x, y, d, predictions[x, y, d, 0])
-                                    name, xmin, ymin, xmax, ymax = annotation
-                                    # Draw a bounding box.
-                                    color = np.random.uniform(0., 255., size=3)
-                                    cv2.rectangle(image, (xmin, ymax), (xmax, ymin), color, 3)
-
-                                    # Display the label at the top of the bounding box
-                                    label_size, base_line = cv2.getTextSize(name, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
-                                    ymax = max(ymax, label_size[1])
-                                    cv2.rectangle(image,
-                                                  (xmin, ymax - round(1.5 * label_size[1])),
-                                                  (xmin + round(1.5 * label_size[0]),
-                                                   ymax + base_line),
-                                                  color,
-                                                  cv2.FILLED)
-                                    cv2.putText(image, '{} {:.2f}'.format(name, predictions[x, y, d, 0]), (xmin, ymax), cv2.FONT_HERSHEY_SIMPLEX, 0.75, 255.-BGR_PIXEL_MEANS, 1)
-                    # Convert BGR --> RGB
-                    image += BGR_PIXEL_MEANS
-                    image = cv2.cvtColor(image.astype(dtype=np.uint8), cv2.COLOR_BGR2RGB)
-                    plt.imshow(image)
-                    plt.show()
+        for i, (images, targets) in enumerate(dataloader):
+            images = images.to(device)
+            predictions = yolo(images)
+            # predictions = targets
+            bboxes, classes, confidences, image_idx = yolo.process_bboxes(predictions, threshold=0.1, nms=True)
+            for idx, image in enumerate(images):
+                image = to_numpy_image(image)
+                mask = image_idx == idx
+                for bbox, cls, confidence in zip(bboxes[mask], classes[mask], confidences[mask]):
+                    name = class_labels[cls]
+                    add_bbox_to_image(image, bbox, confidence, name)
+                plt.imshow(image)
+                plt.show()
 
 
 if __name__ == '__main__':
     main()
-    # device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    #
-    # anchors = ((0.3, 0.3), (0.2, 0.6), (0.6, 0.2), (0.3, 0.8))
-    # classes = ['bicycle']
-    # batch_size = 8
-    #
-    # train_dataset = PascalDatasetYOLO(root_dir='../data/VOC2012/',
-    #                                   classes=classes,#, 'car', 'cat', 'person', 'train', 'tvmonitor'],
-    #                                   dataset='train',
-    #                                   skip_truncated=False,
-    #                                   skip_difficult=False,
-    #                                   image_size=(416, 416),
-    #                                   grid_size=(13, 13),
-    #                                   anchors=anchors)
-    #
-    # torch.random.manual_seed(12345)
-    # np.random.seed(12345)
-    #
-    # yolo = YOLOv2tiny(dataset=train_dataset,
-    #                   anchors=anchors,
-    #                   batch_size=batch_size,
-    #                   device=device)
-    #
-    # yolo = yolo.to(device)
-    #
-    # r = range(1000)
-    #
-    # predictions = None
-    # targets = None
-    # for i, data in enumerate(yolo.dataloader):
-    #     images, targets = data
-    #     images = images.to(device)
-    #     targets = targets.to(device)
-    #     predictions = yolo(images)
-    #     break
-    #
-    # start = time()
-    # for i in r:
-    #     yolo.loss(predictions, targets)
-    # print((time()-start))

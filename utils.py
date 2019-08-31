@@ -138,7 +138,7 @@ class PascalDatasetYOLO(Dataset):
 # Original author: Francisco Massa:
 # https://github.com/fmassa/object-detection.torch
 # Ported to PyTorch by Max deGroot (02/01/2017)
-def nms(boxes, scores, overlap=0.5, top_k=200):
+def non_maximum_suppression(boxes, scores, overlap=0.5, top_k=200):
     """Apply non-maximum suppression at test time to avoid detecting too many
     overlapping bounding boxes for a given object.
     Args:
@@ -198,7 +198,7 @@ def nms(boxes, scores, overlap=0.5, top_k=200):
         # keep only elements with an IoU <= overlap
         idx = idx[iou.le(overlap)]
 
-    return keep
+    return keep[:count].clone()
 
 
 def jaccard(boxes_a, boxes_b):
@@ -272,3 +272,32 @@ def read_classes(file):
     lines = [l for l in lines if len(l) > 0]
     classes = [l for l in lines if l[0] != '#']
     return classes
+
+
+def to_numpy_image(image):
+    image = image.cpu().numpy().astype(dtype=np.float64)
+    image = np.ascontiguousarray(image.transpose(1, 2, 0))
+    image += BGR_PIXEL_MEANS
+    # Convert BGR --> RGB
+    image = cv2.cvtColor(image.astype(dtype=np.uint8), cv2.COLOR_BGR2RGB)
+
+    return image
+
+
+def add_bbox_to_image(image, bbox, confidence, cls):
+    text = '{} {:.2f}'.format(cls, confidence)
+    xmin, ymin, xmax, ymax = bbox
+    # Draw a bounding box.
+    color = np.random.uniform(0., 255., size=3)
+    cv2.rectangle(image, (xmin, ymax), (xmax, ymin), color, 3)
+
+    # Display the label at the top of the bounding box
+    label_size, base_line = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+    ymax = max(ymax, label_size[1])
+    cv2.rectangle(image,
+                  (xmin, ymax - round(1.5 * label_size[1])),
+                  (xmin + round(1.5 * label_size[0]),
+                   ymax + base_line),
+                  color,
+                  cv2.FILLED)
+    cv2.putText(image, text, (xmin, ymax), cv2.FONT_HERSHEY_SIMPLEX, 0.75, [255] * 3, 1)
