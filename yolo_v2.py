@@ -6,9 +6,9 @@ import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader
 from torch import optim
 from time import time
+from dataset import PascalDatasetYOLO
 from utils import PRINT_LINE_LEN, NUM_WORKERS
-from utils import PascalDatasetYOLO
-from utils import xywh2xyxy, non_maximum_suppression, read_classes, to_numpy_image, add_bbox_to_image
+from utils import jaccard, xywh2xyxy, non_maximum_suppression, to_numpy_image, add_bbox_to_image
 from layers import *
 
 
@@ -363,20 +363,11 @@ class YOLOv2tiny(nn.Module):
     def load_weights(self, weightfile):
 
         # Open the weights file
-        fp = open(weightfile, "rb")
-
-        # The first 4 values are header information
-        # 1. Major version number
-        # 2. Minor Version Number
-        # 3. Subversion number
-        # 4. IMages seen
-        header = np.fromfile(fp, dtype=np.int32, count=5)
-        self.header = torch.from_numpy(header)
-        self.seen = self.header[3]
+        f = open(weightfile, "rb")
 
         # The rest of the values are the weights
         # Let's load them up
-        weights = np.fromfile(fp, dtype=np.float32)
+        weights = np.fromfile(f, offset=4*5, dtype=np.float32)
 
         ptr = 0
         for i in range(len(self.module_list)):
@@ -493,11 +484,11 @@ class YOLOv2tiny(nn.Module):
                 dataset.set_image_size(x, y)
                 dataset.set_grid_size(*grid_size)
 
-    def process_bboxes(self, predictions, threshold=0.01, nms=True):
+    def process_bboxes(self, predictions, confidence_threshold=0.01, overlap_threshold=0.5, nms=True):
 
         predictions = predictions.permute(0, 2, 3, 1)
 
-        images_ = []
+        image_idx_ = []
         bboxes_ = []
         confidence_ = []
         classes_ = []
@@ -509,7 +500,7 @@ class YOLOv2tiny(nn.Module):
             idx = torch.arange(0, len(prediction))
             confidence = prediction[:, 0] * prediction[idx, 5 + classes]
 
-            mask = confidence > threshold
+            mask = confidence > confidence_threshold
 
             if sum(mask) == 0:
                 continue
@@ -524,22 +515,22 @@ class YOLOv2tiny(nn.Module):
                 cls = torch.unique(classes)
                 for c in cls:
                     cls_mask = (classes == c).nonzero().flatten()
-                    mask = non_maximum_suppression(bboxes[cls_mask], confidence[cls_mask], overlap=0.5)
+                    mask = non_maximum_suppression(bboxes[cls_mask], confidence[cls_mask], overlap=overlap_threshold)
                     bboxes_.append(bboxes[cls_mask][mask])
                     confidence_.append(confidence[cls_mask][mask])
                     classes_.append(classes[cls_mask][mask])
-                    images_.append(torch.ones(len(bboxes[cls_mask][mask]), device=self.device) * i)
+                    image_idx_.append(torch.ones(len(bboxes[cls_mask][mask]), device=self.device) * i)
             else:
                 bboxes_.append(bboxes)
                 confidence_.append(confidence)
                 classes_.append(classes)
-                images_.append(torch.ones(len(bboxes)) * i)
+                image_idx_.append(torch.ones(len(bboxes)) * i)
 
         if len(bboxes_) > 0:
             bboxes = torch.cat(bboxes_).view(-1, 4)
             classes = torch.cat(classes_).flatten()
             confidence = torch.cat(confidence_).flatten()
-            images = torch.cat(images_).flatten()
+            image_idx = torch.cat(image_idx_).flatten()
 
             bboxes[:, 0::2] *= self.image_size[0]
             bboxes[:, 1::2] *= self.image_size[1]
@@ -547,7 +538,58 @@ class YOLOv2tiny(nn.Module):
             bboxes = torch.clamp(bboxes, min=0, max=self.image_size[0])
             bboxes = torch.clamp(bboxes, min=0, max=self.image_size[1])
 
-            return bboxes, classes, confidence, images
+            return bboxes, classes, confidence, image_idx
+        else:
+            return torch.tensor([], device=self.device), \
+                   torch.tensor([], device=self.device), \
+                   torch.tensor([], device=self.device), \
+                   torch.tensor([], device=self.device)
+
+    def predict(self, dataset, batch_size=10, confidence_threshold=0.1, overlap_threshold=0.5, show=True):
+
+        self.eval()
+
+        dataloader = DataLoader(dataset=dataset,
+                                batch_size=batch_size,
+                                shuffle=True,
+                                num_workers=NUM_WORKERS)
+
+        image_idx_ = []
+        bboxes_ = []
+        confidence_ = []
+        classes_ = []
+
+        with torch.no_grad():
+            for i, (images, targets) in enumerate(dataloader):
+                images = images.to(self.device)
+                predictions = self(images)
+                # predictions = targets
+                bboxes, classes, confidences, image_idx = self.process_bboxes(predictions,
+                                                                              confidence_threshold=confidence_threshold,
+                                                                              overlap_threshold=overlap_threshold,
+                                                                              nms=True)
+                if show:
+                    for idx, image in enumerate(images):
+                        image = to_numpy_image(image)
+                        mask = image_idx == idx
+                        for bbox, cls, confidence in zip(bboxes[mask], classes[mask], confidences[mask]):
+                            name = dataset.classes[cls]
+                            add_bbox_to_image(image, bbox, confidence, name)
+                        plt.imshow(image)
+                        plt.show()
+
+                bboxes_.append(bboxes)
+                confidence_.append(confidence)
+                classes_.append(classes)
+                image_idx_.append(image_idx)
+
+        if len(bboxes_) > 0:
+            bboxes = torch.cat(bboxes_).view(-1, 4)
+            classes = torch.cat(classes_).flatten()
+            confidence = torch.cat(confidence_).flatten()
+            image_idx = torch.cat(image_idx_).flatten()
+
+            return bboxes, classes, confidence, image_idx
         else:
             return torch.tensor([], device=self.device), \
                    torch.tensor([], device=self.device), \
@@ -588,49 +630,30 @@ def main():
                                  anchors=model.anchors
                                  )
 
-    class_labels = read_classes('../data/VOC2012/voc.names')
-
     optimizer = optim.SGD(model.parameters(), lr=5e-5, momentum=0.98)
-    # optimizer = optim.Adam(model.parameters())
 
-    # model.fit(train_data=train_data,
-    #           val_data=val_data,
-    #           optimizer=optimizer,
-    #           batch_size=batch_size,
-    #           epochs=500,
-    #           verbose=True,
-    #           multi_scale=True,
-    #           checkpoint_frequency=100)
+    model.fit(train_data=train_data,
+              val_data=val_data,
+              optimizer=optimizer,
+              batch_size=batch_size,
+              epochs=1,
+              verbose=True,
+              multi_scale=True,
+              checkpoint_frequency=100)
 
-    # yolo = model
-    yolo = pickle.load(open('yolov2_tiny_500.pkl', 'rb'))
+    yolo = model
+    # yolo = pickle.load(open('yolov2_tiny_500.pkl', 'rb'))
+    yolo = yolo.to(device)
     image_size = 416, 416
     yolo.set_image_size(*image_size, dataset=(train_data, val_data))
-
-    dataloader = DataLoader(dataset=val_data,
-                            batch_size=batch_size,
-                            shuffle=True,
-                            num_workers=NUM_WORKERS)
-
-    yolo.eval()
 
     torch.random.manual_seed(12345)
     np.random.seed(12345)
 
-    with torch.no_grad():
-        for i, (images, targets) in enumerate(dataloader):
-            images = images.to(device)
-            predictions = yolo(images)
-            # predictions = targets
-            bboxes, classes, confidences, image_idx = yolo.process_bboxes(predictions, threshold=0.1, nms=True)
-            for idx, image in enumerate(images):
-                image = to_numpy_image(image)
-                mask = image_idx == idx
-                for bbox, cls, confidence in zip(bboxes[mask], classes[mask], confidences[mask]):
-                    name = class_labels[cls]
-                    add_bbox_to_image(image, bbox, confidence, name)
-                plt.imshow(image)
-                plt.show()
+    yolo.predict(dataset=train_data,
+                 confidence_threshold=0.3,
+                 overlap_threshold=0.5,
+                 show=True)
 
 
 if __name__ == '__main__':
