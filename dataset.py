@@ -1,10 +1,9 @@
 import os
-import cv2
 import torch
 import numpy as np
 import xml.etree.ElementTree as Et
 from torch.utils.data import Dataset
-from utils import BGR_PIXEL_MEANS
+from torchvision import transforms
 from utils import jaccard, read_classes
 from PIL import Image
 
@@ -48,55 +47,25 @@ class PascalDatasetYOLO(Dataset):
                     if image_desc[1] == '1':
                         self.images.append(image_desc[0])
 
-    # def __getitem__(self, index):
-    #
-    #     img = self.images[index]
-    #     image = cv2.imread(os.path.join(self.images_dir, img + '.jpg'), 1)
-    #     annotations = self.get_annotations(img)
-    #     target = np.zeros((self.grid_size[0], self.grid_size[1], self.num_anchors * self.num_features), dtype=np.float32)
-    #     # For each object in image.
-    #     for annotation in annotations:
-    #         name, xmin, ymin, xmax, ymax, _, _ = annotation
-    #         if (self.skip_truncated and annotation[5]) or (self.skip_difficult and annotation[6]):
-    #             continue
-    #         if name not in self.classes:
-    #             continue
-    #         cell_dims = 1. / self.grid_size[0], 1. / self.grid_size[1]
-    #         idx = int(np.floor((xmax + xmin) / 2. / cell_dims[0])), int(np.floor((ymax + ymin) / 2. / cell_dims[1]))
-    #         if target[idx[0], idx[1], ::self.num_features].all() == 0:
-    #             ground_truth = torch.tensor(np.array([[xmin, ymin, xmax, ymax]], dtype=np.float32))
-    #             anchors = torch.zeros((self.num_anchors, 4))
-    #             anchors[:, 2:] = self.anchors.clone()
-    #             anchors[:, 0::2] += xmin
-    #             anchors[:, 1::2] += ymin
-    #             ious = jaccard(ground_truth, anchors)
-    #             assign = np.argmax(ious)
-    #             target[idx[0], idx[1], assign * self.num_features + 4] = 1.
-    #             target[idx[0], idx[1], assign * self.num_features + 0] = (xmin + xmax) / 2.
-    #             target[idx[0], idx[1], assign * self.num_features + 1] = (ymin + ymax) / 2.
-    #             target[idx[0], idx[1], assign * self.num_features + 2] = xmax - xmin
-    #             target[idx[0], idx[1], assign * self.num_features + 3] = ymax - ymin
-    #             target[idx[0], idx[1], assign * self.num_features + 5:(assign + 1) * self.num_features] = self.encode_categorical(name)
-    #
-    #     image = cv2.resize(image, self.image_size)
-    #     # Subtract the mean pixel values (across the training set) to zero-mean the image.
-    #     image = image.astype(dtype=np.float32)
-    #     image -= BGR_PIXEL_MEANS
-    #
-    #     image = torch.tensor(image)
-    #     image = image.permute(2, 0, 1)
-    #     target = torch.tensor(target)
-    #     target = target.permute(2, 0, 1)
-    #
-    #     if self.transforms is not None:
-    #         image = self.transforms(image)
-    #
-    #     return image, target
-
     def __getitem__(self, index):
 
         img = self.images[index]
         image = Image.open(os.path.join(self.images_dir, img + '.jpg'))
+        oversize = .1
+        random_flip = np.random.random()
+        crop_offset = (np.random.random(size=2) * oversize * self.image_size).astype(dtype=np.int)
+        if self.transforms:
+            image = transforms.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.25, hue=0.05)(image)
+            image_resize = np.array(self.image_size * np.array((1. + oversize)), dtype=np.int)
+            image = image.resize(image_resize)
+            if random_flip >= 0.5:
+                image = transforms.functional.hflip(image)
+            image = transforms.functional.crop(image,
+                                               *crop_offset[::-1],
+                                               *self.image_size[::-1])
+        else:
+            image = image.resize_image(self.image_size)
+
         annotations = self.get_annotations(img)
         target = np.zeros((self.grid_size[0], self.grid_size[1], self.num_anchors * self.num_features),
                           dtype=np.float32)
@@ -117,20 +86,30 @@ class PascalDatasetYOLO(Dataset):
                 anchors[:, 1::2] += ymin
                 ious = jaccard(ground_truth, anchors)
                 assign = np.argmax(ious)
-                target[idx[0], idx[1], assign * self.num_features + 4] = 1.
+                if self.transforms:
+                    if random_flip >= 0.5:
+                        tmp = xmin
+                        xmin = 1. - xmax
+                        xmax = 1. - tmp
+                    xmin = (xmin * image_resize[0] - crop_offset[0]) / self.image_size[0]
+                    xmax = (xmax * image_resize[0] - crop_offset[0]) / self.image_size[0]
+                    ymin = (ymin * image_resize[1] - crop_offset[1]) / self.image_size[1]
+                    ymax = (ymax * image_resize[1] - crop_offset[1]) / self.image_size[1]
+                    xmin = np.clip(xmin, a_min=0, a_max=1.)
+                    xmax = np.clip(xmax, a_min=0, a_max=1.)
+                    ymin = np.clip(ymin, a_min=0, a_max=1.)
+                    ymax = np.clip(ymax, a_min=0, a_max=1.)
                 target[idx[0], idx[1], assign * self.num_features + 0] = (xmin + xmax) / 2.
                 target[idx[0], idx[1], assign * self.num_features + 1] = (ymin + ymax) / 2.
                 target[idx[0], idx[1], assign * self.num_features + 2] = xmax - xmin
                 target[idx[0], idx[1], assign * self.num_features + 3] = ymax - ymin
+                target[idx[0], idx[1], assign * self.num_features + 4] = 1.
                 target[idx[0], idx[1], assign * self.num_features + 5:(assign + 1) * self.num_features] = self.encode_categorical(name)
 
-        image = image.resize(self.image_size)
+        image = transforms.ToTensor()(image)
 
         target = torch.tensor(target)
         target = target.permute(2, 0, 1)
-
-        if self.transforms is not None:
-            image = self.transforms(image)
 
         return image, target
 

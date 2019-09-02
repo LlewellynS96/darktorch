@@ -8,7 +8,7 @@ from torch import optim
 from torchvision import transforms
 from time import time
 from dataset import PascalDatasetYOLO
-from utils import PRINT_LINE_LEN, NUM_WORKERS, RGB_PIXEL_MEANS, BGR_PIXEL_MEANS
+from utils import PRINT_LINE_LEN, NUM_WORKERS
 from utils import jaccard, xywh2xyxy, non_maximum_suppression, to_numpy_image, add_bbox_to_image
 from layers import *
 
@@ -90,11 +90,12 @@ class YOLOv2tiny(nn.Module):
             # Divide by the number of separate loss components.
             loss['class'] = 0.
             for cls in range(self.num_classes):
-                loss['class'] += nn.MSELoss(reduction='sum')(predictions[obj_mask, 5 + cls], targets[obj_mask, 5 + cls])
+                # loss['class'] += nn.MSELoss(reduction='sum')(predictions[obj_mask, 5 + cls], targets[obj_mask, 5 + cls])
+                loss['class'] += FocalLoss(reduction='sum')(predictions[obj_mask, 5 + cls], targets[obj_mask, 5 + cls])
 
             threshold = 0.6
             noobj_mask = torch.nonzero(ious > threshold).squeeze()
-            targets[noobj_mask, 0] = 2.
+            targets[noobj_mask, 4] = 2.
             noobj_mask = torch.nonzero(targets[:, 4] == 0.).squeeze()
 
             loss['no_object'] = lambda_noobj * nn.MSELoss(reduction='sum')(predictions[noobj_mask, 4],
@@ -134,13 +135,11 @@ class YOLOv2tiny(nn.Module):
                 random_size = np.random.randint(10, 20) * self.downscale_factor
                 self.set_image_size(random_size, random_size, dataset=train_data)
             for i, (images, targets) in enumerate(train_dataloader, 1):
-                image = images[0].permute(1, 2, 0).numpy()
-                image += RGB_PIXEL_MEANS
-                image *= 255.
-                image = image.astype(dtype=np.uint8)
-                # image = cv2.cvtColor(image.astype(dtype=np.uint8), cv2.COLOR_BGR2RGB)
-                plt.imshow(image)
-                plt.show()
+                # image = images[0].permute(1, 2, 0).numpy()
+                # image *= 255.
+                # image = image.astype(dtype=np.uint8)
+                # plt.imshow(image)
+                # plt.show()
                 images = images.to(self.device)
                 targets = targets.to(self.device)
                 optimizer.zero_grad()
@@ -176,7 +175,7 @@ class YOLOv2tiny(nn.Module):
                                                                                                 end - start)
             print('\r' + string, end='\n')
             if epoch % checkpoint_frequency == 0:
-                self.save_model('yolov2_tiny_{}.pkl'.format(epoch))
+                self.save_model('yolov2-tiny-{}-bicycle.pkl'.format(epoch))
 
         return train_loss, val_loss
 
@@ -601,7 +600,7 @@ class YOLOv2tiny(nn.Module):
         with torch.no_grad():
             for i, (images, targets) in enumerate(dataloader):
                 images = images.to(self.device)
-                predictions = self(images / 255.)
+                predictions = self(images)
                 # predictions = targets
                 bboxes, classes, confidences, image_idx = self.process_bboxes(predictions,
                                                                               confidence_threshold=confidence_threshold,
@@ -612,10 +611,7 @@ class YOLOv2tiny(nn.Module):
                         image = to_numpy_image(image)
                         mask = image_idx == idx
                         for bbox, cls, confidence in zip(bboxes[mask], classes[mask], confidences[mask]):
-                            try:
-                                name = dataset.classes[cls]
-                            except IndexError:
-                                print(1)
+                            name = dataset.classes[cls]
                             add_bbox_to_image(image, bbox, confidence, name)
                         plt.imshow(image)
                         plt.show()
@@ -670,61 +666,54 @@ def main():
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     batch_size = 10
 
-    model = YOLOv2tiny(model='models/yolov2-tiny-custom.cfg',
+    train = False
+
+    model = YOLOv2tiny(model='models/yolov2-tiny-voc.cfg',
                        device=device)
     model = model.to(device)
 
-    torchsummary.summary(model, (3, 416, 416))
-
-    train_transforms = transforms.Compose([transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.2),
-                                           transforms.ToTensor(),
-                                           transforms.Normalize(RGB_PIXEL_MEANS, [1., 1., 1.])]
-                                          )
-
-    val_transforms = transforms.Compose([transforms.Normalize(RGB_PIXEL_MEANS, [1., 1., 1.]),
-                                         transforms.ToTensor()]
-                                        )
-
     train_data = PascalDatasetYOLO(root_dir='../data/VOC2012/',
-                                   classes='../data/VOC2012/voc-custom.names',
+                                   classes='../data/VOC2012/voc.names',
                                    dataset='train',
-                                   skip_truncated=True,
+                                   skip_truncated=False,
                                    skip_difficult=True,
                                    image_size=model.image_size,
                                    grid_size=model.grid_size,
                                    anchors=model.anchors,
-                                   transforms=train_transforms
+                                   transforms=True
                                    )
 
     val_data = PascalDatasetYOLO(root_dir='../data/VOC2012/',
-                                 classes='../data/VOC2012/voc-custom.names',
+                                 classes='../data/VOC2012/voc.names',
                                  dataset='val',
-                                 skip_truncated=True,
+                                 skip_truncated=False,
                                  skip_difficult=True,
                                  image_size=model.image_size,
                                  grid_size=model.grid_size,
                                  anchors=model.anchors,
-                                 transforms=val_transforms
+                                 transforms=True
                                  )
 
-    # model.load_weights('models/yolov2-tiny-voc.weights')
+    torchsummary.summary(model, (3, 416, 416))
+    model.load_weights('models/yolov2-tiny-voc.weights')
     # model.freeze(freeze_last_layer=False)
 
-    optimizer = optim.SGD(model.get_trainable_parameters(), lr=5e-5, momentum=0.98)
+    if train:
+        optimizer = optim.SGD(model.get_trainable_parameters(), lr=1e-5, momentum=0.99)
 
-    model.fit(train_data=train_data,
-              val_data=val_data,
-              optimizer=optimizer,
-              batch_size=batch_size,
-              epochs=500,
-              verbose=True,
-              multi_scale=True,
-              checkpoint_frequency=10)
+        model.fit(train_data=train_data,
+                  val_data=val_data,
+                  optimizer=optimizer,
+                  batch_size=batch_size,
+                  epochs=100,
+                  verbose=True,
+                  multi_scale=True,
+                  checkpoint_frequency=100)
 
-    model.save_weights('models/yolov2-tiny-voc-custom.weights')
+        model.save_weights('models/yolov2-tiny-focal-bicycle.weights')
 
     yolo = model
-    # yolo = pickle.load(open('yolov2_tiny_500.pkl', 'rb'))
+    # yolo = pickle.load(open('yolov2-tiny-100-bicycle.pkl', 'rb'))
     yolo = yolo.to(device)
     image_size = 416, 416
     yolo.set_image_size(*image_size, dataset=(train_data, val_data))
@@ -732,7 +721,8 @@ def main():
     torch.random.manual_seed(12345)
     np.random.seed(12345)
 
-    yolo.predict(dataset=train_data,
+    yolo.predict(dataset=val_data,
+                 batch_size=1,
                  confidence_threshold=0.5,
                  overlap_threshold=0.4,
                  show=True)

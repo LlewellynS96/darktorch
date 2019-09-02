@@ -1,9 +1,12 @@
 import torch
 import numpy as np
 import cv2
+from PIL import Image
 
-BGR_PIXEL_MEANS = np.array([103.939, 116.779, 123.68])
-RGB_PIXEL_MEANS = np.array([123.68, 116.779, 103.939]) / 255.
+# BGR_PIXEL_MEANS = np.array([103.939, 116.779, 123.68]) / 255.
+# RGB_PIXEL_MEANS = np.array([123.68, 116.779, 103.939]) / 255.
+# RGB_PIXEL_MEANS = np.array([124, 117, 104]) / 255.
+
 
 PRINT_LINE_LEN = 100
 NUM_WORKERS = 0
@@ -151,11 +154,9 @@ def read_classes(file):
 
 def to_numpy_image(image):
 
-    image = image.cpu().numpy().astype(dtype=np.float64)
-    image = np.ascontiguousarray(image.transpose(1, 2, 0))
-    image += BGR_PIXEL_MEANS
-    # Convert BGR --> RGB
-    image = cv2.cvtColor(image.astype(dtype=np.uint8), cv2.COLOR_BGR2RGB)
+    image = image.permute(1, 2, 0).cpu().numpy()
+    image *= 255.
+    image = image.astype(dtype=np.uint8)
 
     return image
 

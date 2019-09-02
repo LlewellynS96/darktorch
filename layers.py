@@ -1,5 +1,6 @@
 import torch
 from torch import nn
+import torch.nn.functional as F
 
 
 class EmptyLayer(nn.Module):
@@ -20,15 +21,12 @@ class YOLOv2Layer(nn.Module):
         self.num_features = parent.num_features
 
     def forward(self, x):
-        x = x.permute(0, 2, 3, 1)
+        x = x.permute(0, 3, 2, 1)
         in_shape = x.shape
         x = x.contiguous().view(-1, self.num_features)
 
-        # Convert t_o --> IoU
-        x[:, 4] = torch.sigmoid(x[:, 4])
-
         # Convert t_x and t_y --> x and y (ignoring the offset).
-        x[:, :4] = torch.sigmoid(x[:, :4])
+        x[:, :2] = torch.sigmoid(x[:, :2])
         # Add the offset.
         offsets = torch.arange(0, int(x.shape[0] / in_shape[0]), device=self.device)
         h_offsets = offsets / self.grid_size[0] / self.num_anchors
@@ -45,12 +43,11 @@ class YOLOv2Layer(nn.Module):
 
         x[:, 2] = anchors[:, 0] * torch.exp(x[:, 2])
         x[:, 3] = anchors[:, 1] * torch.exp(x[:, 3])
-        # Add softmax to class probabilities.
-        # NB!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-        x[:, 5:] = torch.sigmoid(x[:, 5:])
+        # Convert t_o --> IoU and get class probabilities.
+        x[:, 4:] = torch.sigmoid(x[:, 4:])
 
         x = x.contiguous().view(*in_shape)
-        x = x.permute(0, 3, 1, 2)
+        x = x.permute(0, 3, 2, 1)
 
         return x
 
@@ -115,3 +112,29 @@ class Swish(nn.Module):
 
     def forward(self, x):
         return x * nn.Sigmoid(self.beta * x)
+
+
+class FocalLoss(nn.Module):
+    def __init__(self, alpha=1, gamma=2, logits=False, reduction=True):
+        super(FocalLoss, self).__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+        self.logits = logits
+        self.reduction = reduction
+
+    def forward(self, inputs, targets):
+        if self.logits:
+            bce_loss = F.binary_cross_entropy_with_logits(inputs, targets, reduction='none')
+        else:
+            bce_loss = F.binary_cross_entropy(inputs, targets, reduction='none')
+        pt = torch.exp(-bce_loss)
+        f_loss = self.alpha * (1 - pt)**self.gamma * bce_loss
+
+        if self.reduction is None:
+            return f_loss
+        elif self.reduction == 'mean':
+            return torch.mean(f_loss)
+        elif self.reduction == 'sum':
+            return torch.sum(f_loss)
+        else:
+            raise AssertionError
