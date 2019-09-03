@@ -13,6 +13,9 @@ from utils import jaccard, xywh2xyxy, non_maximum_suppression, to_numpy_image, a
 from layers import *
 
 
+REDUCTION = 'mean'
+
+
 class YOLOv2tiny(nn.Module):
 
     def __init__(self, model, device='cuda'):
@@ -78,34 +81,34 @@ class YOLOv2tiny(nn.Module):
             ious = jaccard(predictions_xyxy, targets_xyxy)
             ious, _ = torch.max(ious, dim=1)
 
-            loss['object'] = lambda_obj * nn.MSELoss(reduction='sum')(predictions[obj_mask, 4], ious[obj_mask])
-            loss['coord'] = nn.MSELoss(reduction='sum')(predictions[obj_mask, 0], targets[obj_mask, 0])
-            loss['coord'] += nn.MSELoss(reduction='sum')(predictions[obj_mask, 1], targets[obj_mask, 1])
-            loss['coord'] += nn.MSELoss(reduction='sum')(torch.sqrt(predictions[obj_mask, 2]),
-                                                         torch.sqrt(targets[obj_mask, 2]))
-            loss['coord'] += nn.MSELoss(reduction='sum')(torch.sqrt(predictions[obj_mask, 3]),
-                                                         torch.sqrt(targets[obj_mask, 3]))
+            loss['object'] = lambda_obj * nn.MSELoss(reduction=REDUCTION)(predictions[obj_mask, 4], ious[obj_mask])
+            loss['coord'] = nn.MSELoss(reduction=REDUCTION)(predictions[obj_mask, 0], targets[obj_mask, 0])
+            loss['coord'] += nn.MSELoss(reduction=REDUCTION)(predictions[obj_mask, 1], targets[obj_mask, 1])
+            loss['coord'] += nn.MSELoss(reduction=REDUCTION)(torch.sqrt(predictions[obj_mask, 2]),
+                                                             torch.sqrt(targets[obj_mask, 2]))
+            loss['coord'] += nn.MSELoss(reduction=REDUCTION)(torch.sqrt(predictions[obj_mask, 3]),
+                                                             torch.sqrt(targets[obj_mask, 3]))
             # Multiply by lambda_coord
             loss['coord'] *= lambda_coord
             # Divide by the number of separate loss components.
             loss['class'] = 0.
             for cls in range(self.num_classes):
-                # loss['class'] += nn.MSELoss(reduction='sum')(predictions[obj_mask, 5 + cls], targets[obj_mask, 5 + cls])
-                loss['class'] += FocalLoss(reduction='sum')(predictions[obj_mask, 5 + cls], targets[obj_mask, 5 + cls])
+                # loss['class'] += nn.MSELoss(reduction=REDUCTION)(predictions[obj_mask, 5 + cls], targets[obj_mask, 5 + cls])
+                loss['class'] += FocalLoss(reduction=REDUCTION)(predictions[obj_mask, 5 + cls], targets[obj_mask, 5 + cls])
 
             threshold = 0.5
             noobj_mask = torch.nonzero(ious > threshold).squeeze()
             targets[noobj_mask, 4] = 2.
             noobj_mask = torch.nonzero(targets[:, 4] == 0.).squeeze()
 
-            loss['no_object'] = lambda_noobj * nn.MSELoss(reduction='sum')(predictions[noobj_mask, 4],
-                                                                           targets[noobj_mask, 4])
+            loss['no_object'] = lambda_noobj * nn.MSELoss(reduction=REDUCTION)(predictions[noobj_mask, 4],
+                                                                               targets[noobj_mask, 4])
         else:
             loss['object'] = torch.tensor([0.], device=self.device)
             loss['coord'] = torch.tensor([0.], device=self.device)
             loss['class'] = torch.tensor([0.], device=self.device)
 
-            loss['no_object'] = lambda_noobj * nn.MSELoss(reduction='sum')(predictions[:, 4], targets[:, 4])
+            loss['no_object'] = lambda_noobj * nn.MSELoss(reduction=REDUCTION)(predictions[:, 4], targets[:, 4])
 
         loss['object'] /= batch_size
         loss['coord'] /= batch_size
@@ -173,7 +176,7 @@ class YOLOv2tiny(nn.Module):
                                                                                                 end - start)
             print('\r' + string, end='\n')
             if epoch % checkpoint_frequency == 0:
-                self.save_model('yolov2-tiny-{}-bicycle.pkl'.format(epoch))
+                self.save_model('yolov2-tiny_{}.pkl'.format(epoch))
 
         return train_loss, val_loss
 
@@ -680,7 +683,7 @@ def main():
                                    image_size=model.image_size,
                                    grid_size=model.grid_size,
                                    anchors=model.anchors,
-                                   transforms=False
+                                   transforms=True
                                    )
 
     val_data = PascalDatasetYOLO(root_dir='../data/VOC2012/',
@@ -691,7 +694,7 @@ def main():
                                  image_size=model.image_size,
                                  grid_size=model.grid_size,
                                  anchors=model.anchors,
-                                 transforms=True
+                                 transforms=False
                                  )
 
     torchsummary.summary(model, (3, 416, 416))
@@ -702,18 +705,18 @@ def main():
         torch.random.manual_seed(12345)
         np.random.seed(12345)
 
-        optimizer = optim.SGD(model.get_trainable_parameters(), lr=1e-5, momentum=0.99)
+        optimizer = optim.SGD(model.get_trainable_parameters(), lr=1e-5, momentum=0.98)
 
-        model.fit(train_data=val_data,
+        model.fit(train_data=train_data,
                   val_data=val_data,
                   optimizer=optimizer,
                   batch_size=batch_size,
-                  epochs=1,
+                  epochs=5,
                   verbose=True,
                   multi_scale=False,
-                  checkpoint_frequency=1)
+                  checkpoint_frequency=5)
 
-        model.save_weights('models/yolov2-tiny-voc-swish.weights')
+        model.save_weights('models/yolov2-tiny-voc-custom.weights')
 
     yolo = model
     # yolo = pickle.load(open('yolov2-tiny-100-bicycle.pkl', 'rb'))
