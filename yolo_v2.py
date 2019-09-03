@@ -55,9 +55,9 @@ class YOLOv2tiny(nn.Module):
 
         batch_size = targets.shape[0]
 
-        lambda_coord = 10.
-        lambda_obj = 2.
-        lambda_noobj = 0.2
+        lambda_coord = 5.
+        lambda_obj = 1.
+        lambda_noobj = 0.5
 
         loss = {}
 
@@ -93,7 +93,7 @@ class YOLOv2tiny(nn.Module):
                 # loss['class'] += nn.MSELoss(reduction='sum')(predictions[obj_mask, 5 + cls], targets[obj_mask, 5 + cls])
                 loss['class'] += FocalLoss(reduction='sum')(predictions[obj_mask, 5 + cls], targets[obj_mask, 5 + cls])
 
-            threshold = 0.6
+            threshold = 0.5
             noobj_mask = torch.nonzero(ious > threshold).squeeze()
             targets[noobj_mask, 4] = 2.
             noobj_mask = torch.nonzero(targets[:, 4] == 0.).squeeze()
@@ -135,9 +135,7 @@ class YOLOv2tiny(nn.Module):
                 random_size = np.random.randint(10, 20) * self.downscale_factor
                 self.set_image_size(random_size, random_size, dataset=train_data)
             for i, (images, targets) in enumerate(train_dataloader, 1):
-                # image = images[0].permute(1, 2, 0).numpy()
-                # image *= 255.
-                # image = image.astype(dtype=np.uint8)
+                # image = to_numpy_image(images[0])
                 # plt.imshow(image)
                 # plt.show()
                 images = images.to(self.device)
@@ -663,10 +661,12 @@ def main():
     torch.random.manual_seed(12345)
     np.random.seed(12345)
 
+    torch.autograd.set_detect_anomaly(True)
+
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     batch_size = 10
 
-    train = False
+    train = True
 
     model = YOLOv2tiny(model='models/yolov2-tiny-voc.cfg',
                        device=device)
@@ -680,7 +680,7 @@ def main():
                                    image_size=model.image_size,
                                    grid_size=model.grid_size,
                                    anchors=model.anchors,
-                                   transforms=True
+                                   transforms=False
                                    )
 
     val_data = PascalDatasetYOLO(root_dir='../data/VOC2012/',
@@ -699,18 +699,21 @@ def main():
     # model.freeze(freeze_last_layer=False)
 
     if train:
+        torch.random.manual_seed(12345)
+        np.random.seed(12345)
+
         optimizer = optim.SGD(model.get_trainable_parameters(), lr=1e-5, momentum=0.99)
 
-        model.fit(train_data=train_data,
+        model.fit(train_data=val_data,
                   val_data=val_data,
                   optimizer=optimizer,
                   batch_size=batch_size,
-                  epochs=100,
+                  epochs=1,
                   verbose=True,
-                  multi_scale=True,
-                  checkpoint_frequency=100)
+                  multi_scale=False,
+                  checkpoint_frequency=1)
 
-        model.save_weights('models/yolov2-tiny-focal-bicycle.weights')
+        model.save_weights('models/yolov2-tiny-voc-swish.weights')
 
     yolo = model
     # yolo = pickle.load(open('yolov2-tiny-100-bicycle.pkl', 'rb'))

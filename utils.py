@@ -9,7 +9,7 @@ from PIL import Image
 
 
 PRINT_LINE_LEN = 100
-NUM_WORKERS = 0
+NUM_WORKERS = 4
 
 
 # Original author: Francisco Massa:

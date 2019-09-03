@@ -64,7 +64,7 @@ class PascalDatasetYOLO(Dataset):
                                                *crop_offset[::-1],
                                                *self.image_size[::-1])
         else:
-            image = image.resize_image(self.image_size)
+            image = image.resize(self.image_size)
 
         annotations = self.get_annotations(img)
         target = np.zeros((self.grid_size[0], self.grid_size[1], self.num_anchors * self.num_features),

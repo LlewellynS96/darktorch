@@ -44,7 +44,8 @@ class YOLOv2Layer(nn.Module):
         x[:, 2] = anchors[:, 0] * torch.exp(x[:, 2])
         x[:, 3] = anchors[:, 1] * torch.exp(x[:, 3])
         # Convert t_o --> IoU and get class probabilities.
-        x[:, 4:] = torch.sigmoid(x[:, 4:])
+        x[:, 4] = torch.sigmoid(x[:, 4])
+        x[:, 5:] = torch.softmax(x[:, 5:].contiguous(), dim=1)
 
         x = x.contiguous().view(*in_shape)
         x = x.permute(0, 3, 2, 1)
@@ -62,7 +63,7 @@ class YOLOv3Layer(nn.Module):
         self.num_features = parent.num_features
 
     def forward(self, x):
-        x = x.permute(0, 2, 3, 1)
+        x = x.permute(0, 3, 2, 1)
         in_shape = x.shape
         x = x.contiguous().view(-1, self.num_features)
 
@@ -92,7 +93,7 @@ class YOLOv3Layer(nn.Module):
         x[:, 5:] = torch.sigmoid(x[:, 5:])
 
         x = x.contiguous().view(*in_shape)
-        x = x.permute(0, 3, 1, 2)
+        x = x.permute(0, 3, 2, 1)
 
         return x
 
@@ -111,7 +112,7 @@ class Swish(nn.Module):
             self.beta.requires_grad = False
 
     def forward(self, x):
-        return x * nn.Sigmoid(self.beta * x)
+        return x * nn.Sigmoid()(self.beta * x)
 
 
 class FocalLoss(nn.Module):
