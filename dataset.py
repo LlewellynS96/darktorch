@@ -19,7 +19,7 @@ class PascalDatasetYOLO(Dataset):
                                            'chair', 'cow', 'diningtable', 'dog', 'horse', 'motorbike', 'person',
                                            'pottedplant', 'sheep', 'sofa', 'train', 'tvmonitor'})
 
-        assert dataset in ['train', 'val', 'trainval']
+        assert dataset in ['train', 'val', 'trainval', 'test']
 
         self.anchors = anchors.clone().detach().cpu()
         self.num_classes = len(self.classes)
@@ -30,6 +30,7 @@ class PascalDatasetYOLO(Dataset):
         self.images_dir = os.path.join(self.root_dir, 'JPEGImages/')
         self.annotations_dir = os.path.join(self.root_dir, 'Annotations')
         self.sets_dir = os.path.join(self.root_dir, 'ImageSets', 'Main')
+        self.dataset = dataset
 
         self.images = []
         self.skip_truncated = skip_truncated
@@ -50,7 +51,9 @@ class PascalDatasetYOLO(Dataset):
     def __getitem__(self, index):
 
         img = self.images[index]
+        # img = '2008_005808'
         image = Image.open(os.path.join(self.images_dir, img + '.jpg'))
+        image_info = {'id': img, 'width': image.width, 'height': image.height, 'dataset': self.dataset}
         oversize = .1
         random_flip = np.random.random()
         crop_offset = (np.random.random(size=2) * oversize * self.image_size).astype(dtype=np.int)
@@ -111,7 +114,7 @@ class PascalDatasetYOLO(Dataset):
         target = torch.tensor(target)
         target = target.permute(2, 0, 1)
 
-        return image, target
+        return image, image_info, target
 
     def __len__(self):
 

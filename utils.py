@@ -1,15 +1,11 @@
 import torch
 import numpy as np
 import cv2
-from PIL import Image
-
-# BGR_PIXEL_MEANS = np.array([103.939, 116.779, 123.68]) / 255.
-# RGB_PIXEL_MEANS = np.array([123.68, 116.779, 103.939]) / 255.
-# RGB_PIXEL_MEANS = np.array([124, 117, 104]) / 255.
+import os
 
 
 PRINT_LINE_LEN = 100
-NUM_WORKERS = 4
+NUM_WORKERS = 0
 
 
 # Original author: Francisco Massa:
@@ -152,11 +148,13 @@ def read_classes(file):
     return classes
 
 
-def to_numpy_image(image):
+def to_numpy_image(image, size):
 
     image = image.permute(1, 2, 0).cpu().numpy()
     image *= 255.
     image = image.astype(dtype=np.uint8)
+    image = cv2.resize(image, dsize=size, interpolation=cv2.INTER_CUBIC)
+    image = np.array(image)
 
     return image
 
@@ -164,7 +162,12 @@ def to_numpy_image(image):
 def add_bbox_to_image(image, bbox, confidence, cls):
 
     text = '{} {:.2f}'.format(cls, confidence)
+    height, width = image.shape[:2]
     xmin, ymin, xmax, ymax = bbox
+    xmin *= width
+    xmax *= width
+    ymin *= height
+    ymax *= height
     # Draw a bounding box.
     color = np.random.uniform(0., 255., size=3)
     cv2.rectangle(image, (xmin, ymax), (xmax, ymin), color, 3)
@@ -179,3 +182,15 @@ def add_bbox_to_image(image, bbox, confidence, cls):
                   color,
                   cv2.FILLED)
     cv2.putText(image, text, (xmin, ymax), cv2.FONT_HERSHEY_SIMPLEX, 0.75, [255] * 3, 1)
+
+
+def export_prediction(cls, image_id, top, left, bottom, right, confidence,
+                      prefix='comp4', set_name='test', directory='detections'):
+    filename = prefix + '_det_' + set_name + '_' + cls + '.txt'
+    filename = os.path.join(directory, filename)
+
+    with open(filename, 'a') as f:
+        prediction = [image_id, confidence, top, left, bottom, right, '\n']
+        prediction = map(str, prediction)
+        prediction = ' '.join(prediction)
+        f.write(prediction)
