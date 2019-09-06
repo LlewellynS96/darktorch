@@ -270,12 +270,12 @@ def find_best_anchors(classes, k=5, max_iter=20, root_dir='data/VOC2012/', datas
 
 def main():
     classes = read_classes('../data/VOC2012/voc.names')
-    print(find_best_anchors(classes,
-                            k=4,
-                            max_iter=1000,
-                            root_dir='../data/VOC2012/',
-                            dataset='trainval',
-                            skip_truncated=False))
+    print(13 * find_best_anchors(classes,
+                                 k=10,
+                                 max_iter=1000,
+                                 root_dir='../data/VOC2012/',
+                                 dataset='trainval',
+                                 skip_truncated=False))
 
 
 if __name__ == '__main__':
