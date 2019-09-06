@@ -2,6 +2,7 @@ import torch
 import numpy as np
 import cv2
 import os
+import xml.etree.ElementTree as Et
 
 
 PRINT_LINE_LEN = 100
@@ -11,7 +12,7 @@ NUM_WORKERS = 0
 # Original author: Francisco Massa:
 # https://github.com/fmassa/object-detection.torch
 # Ported to PyTorch by Max deGroot (02/01/2017)
-def non_maximum_suppression(boxes, scores, overlap=0.5, top_k=200):
+def non_maximum_suppression(boxes, scores, overlap=0.5, top_k=101):
     """Apply non-maximum suppression at test time to avoid detecting too many
     overlapping bounding boxes for a given object.
     Args:
@@ -194,3 +195,88 @@ def export_prediction(cls, image_id, top, left, bottom, right, confidence,
         prediction = map(str, prediction)
         prediction = ' '.join(prediction)
         f.write(prediction)
+
+
+def get_annotations(annotations_dir, img):
+
+    file = os.path.join(annotations_dir, img + '.xml')
+    tree = Et.parse(file)
+    root = tree.getroot()
+
+    annotations = []
+
+    size = root.find('size')
+    width = int(size.find('width').text)
+    height = int(size.find('height').text)
+
+    for obj in root.findall('object'):
+        bbox = obj.find('bndbox')
+        name = obj.find('name').text
+        truncated = int(obj.find('truncated').text)
+        difficult = int(obj.find('difficult').text)
+        # Get ground truth bounding boxes.
+        # NOTE: The creators of the Pascal VOC dataset started counting at 1,
+        # and thus the indices have to be corrected.
+        xmin = (float(bbox.find('xmin').text) - 1.) / width
+        xmax = (float(bbox.find('xmax').text) - 1.) / width
+        ymin = (float(bbox.find('ymin').text) - 1.) / height
+        ymax = (float(bbox.find('ymax').text) - 1.) / height
+        annotations.append((name, xmin, ymin, xmax, ymax, truncated, difficult))
+
+    return annotations
+
+
+def find_best_anchors(classes, k=5, max_iter=20, root_dir='data/VOC2012/', dataset='train', skip_truncated=True):
+
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+    sets_dir = os.path.join(root_dir, 'ImageSets', 'Main')
+    annotations_dir = os.path.join(root_dir, 'Annotations')
+
+    images = []
+
+    for cls in classes:
+        file = os.path.join(sets_dir, '{}_{}.txt'.format(cls, dataset))
+        with open(file) as f:
+            for line in f:
+                image_desc = line.split()
+                if image_desc[1] == '1':
+                    images.append(image_desc[0])
+
+    images = list(set(images))
+    bboxes = []
+
+    for image in images:
+        annotations = get_annotations(annotations_dir, image)
+        for annotation in annotations:
+            _, xmin, ymin, xmax, ymax, truncated, _ = annotation
+            if skip_truncated and truncated:
+                continue
+            width = xmax - xmin
+            height = ymax - ymin
+            bboxes.append([0., 0., width, height])
+
+    bboxes = torch.tensor(bboxes, device=device)
+    anchors = torch.tensor(([0., 0., 1., 1.] * np.random.random((k, 4))).astype(dtype=np.float32), device=device)
+
+    for _ in range(max_iter):
+        ious = jaccard(bboxes, anchors)
+        idx = torch.argmax(ious, dim=1)
+        for i in range(k):
+            anchors[i] = torch.mean(bboxes[idx == i], dim=0)
+
+    return anchors[:, 2:]
+
+
+def main():
+    classes = read_classes('../data/VOC2012/voc.names')
+    print(find_best_anchors(classes,
+                            k=4,
+                            max_iter=1000,
+                            root_dir='../data/VOC2012/',
+                            dataset='trainval',
+                            skip_truncated=False))
+
+
+if __name__ == '__main__':
+    main()

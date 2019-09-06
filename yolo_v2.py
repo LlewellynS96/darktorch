@@ -31,7 +31,7 @@ if __name__ == '__main__':
                                    image_size=model.image_size,
                                    grid_size=model.grid_size,
                                    anchors=model.anchors,
-                                   transforms=True
+                                   do_transform=True
                                    )
 
     val_data = PascalDatasetYOLO(root_dir='../data/VOC2012/',
@@ -42,7 +42,7 @@ if __name__ == '__main__':
                                  image_size=model.default_image_size,
                                  grid_size=model.grid_size,
                                  anchors=model.anchors,
-                                 transforms=False
+                                 do_transform=False
                                  )
 
     model.load_weights('models/yolov2-tiny-voc.weights')
@@ -80,7 +80,7 @@ if __name__ == '__main__':
                                   image_size=model.image_size,
                                   grid_size=model.grid_size,
                                   anchors=model.anchors,
-                                  transforms=False
+                                  do_transform=False
                                   )
 
     if predict:

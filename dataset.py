@@ -4,14 +4,14 @@ import numpy as np
 import xml.etree.ElementTree as Et
 from torch.utils.data import Dataset
 from torchvision import transforms
-from utils import jaccard, read_classes
+from utils import jaccard, read_classes, get_annotations
 from PIL import Image
 
 
 class PascalDatasetYOLO(Dataset):
 
     def __init__(self, anchors, classes, root_dir='data/VOC2012/', dataset='train', skip_truncated=True,
-                 transforms=None, skip_difficult=True, image_size=(416, 416), grid_size=(13, 13)):
+                 do_transform=None, skip_difficult=True, image_size=(416, 416), grid_size=(13, 13)):
 
         self.classes = read_classes(classes)
 
@@ -38,7 +38,7 @@ class PascalDatasetYOLO(Dataset):
         self.image_size = image_size
         self.grid_size = grid_size
 
-        self.transforms = transforms
+        self.transforms = do_transform
 
         for cls in self.classes:
             file = os.path.join(self.sets_dir, '{}_{}.txt'.format(cls, dataset))
@@ -47,6 +47,8 @@ class PascalDatasetYOLO(Dataset):
                     image_desc = line.split()
                     if image_desc[1] == '1':
                         self.images.append(image_desc[0])
+
+        self.images = list(set(self.images))  # remove duplicates
 
     def __getitem__(self, index):
 
@@ -69,7 +71,7 @@ class PascalDatasetYOLO(Dataset):
         else:
             image = image.resize(self.image_size)
 
-        annotations = self.get_annotations(img)
+        annotations = get_annotations(self.annotations_dir, img)
         target = np.zeros((self.grid_size[0], self.grid_size[1], self.num_anchors * self.num_features),
                           dtype=np.float32)
         # For each object in image.
@@ -119,34 +121,6 @@ class PascalDatasetYOLO(Dataset):
     def __len__(self):
 
         return len(self.images)
-
-    def get_annotations(self, img):
-
-        file = os.path.join(self.annotations_dir, img + '.xml')
-        tree = Et.parse(file)
-        root = tree.getroot()
-
-        annotations = []
-
-        size = root.find('size')
-        width = int(size.find('width').text)
-        height = int(size.find('height').text)
-
-        for obj in root.findall('object'):
-            bbox = obj.find('bndbox')
-            name = obj.find('name').text
-            truncated = int(obj.find('truncated').text)
-            difficult = int(obj.find('difficult').text)
-            # Get ground truth bounding boxes.
-            # NOTE: The creators of the Pascal VOC dataset started counting at 1,
-            # and thus the indices have to be corrected.
-            xmin = (float(bbox.find('xmin').text) - 1.) / width
-            xmax = (float(bbox.find('xmax').text) - 1.) / width
-            ymin = (float(bbox.find('ymin').text) - 1.) / height
-            ymax = (float(bbox.find('ymax').text) - 1.) / height
-            annotations.append((name, xmin, ymin, xmax, ymax, truncated, difficult))
-
-        return annotations
 
     def encode_categorical(self, name):
         y = self.classes.index(name)

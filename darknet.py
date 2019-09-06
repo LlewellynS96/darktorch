@@ -621,7 +621,7 @@ class YOLOv2tiny(nn.Module):
                     progress = '=' * ii
                     progress += '>'
                     progress += ' ' * (PRINT_LINE_LEN - ii)
-                    string = 'Exporting |{}| {} %'.format(progress, int(i / len(dataloader) * 100))
+                    string = 'Exporting |{}| {:.1f} %'.format(progress, i / len(dataloader) * 100.)
                     print('\r' + string, end='')
 
                 bboxes_.append(bboxes)
