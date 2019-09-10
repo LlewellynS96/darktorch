@@ -12,13 +12,14 @@ class EmptyLayer(nn.Module):
 
 
 class YOLOv2Layer(nn.Module):
-    def __init__(self, parent, anchors):
+    def __init__(self, parent, anchors, softmax=False):
         super(YOLOv2Layer, self).__init__()
         self.device = parent.device
         self.anchors = torch.tensor(anchors, device=self.device)
         self.num_anchors = len(anchors)
         self.grid_size = parent.grid_size
         self.num_features = parent.num_features
+        self.softmax = softmax
 
     def forward(self, x):
         x = x.permute(0, 3, 2, 1)
@@ -45,7 +46,10 @@ class YOLOv2Layer(nn.Module):
         x[:, 3] = anchors[:, 1] * torch.exp(x[:, 3])
         # Convert t_o --> IoU and get class probabilities.
         x[:, 4] = torch.sigmoid(x[:, 4])
-        x[:, 5:] = torch.softmax(x[:, 5:].contiguous(), dim=1)
+        if self.softmax:
+            x[:, 5:] = torch.softmax(x[:, 5:].contiguous(), dim=1)
+        else:
+            x[:, 5:] = torch.sigmoid(x[:, 5:])
 
         x = x.contiguous().view(*in_shape)
         x = x.permute(0, 3, 2, 1)
@@ -54,13 +58,14 @@ class YOLOv2Layer(nn.Module):
 
 
 class YOLOv3Layer(nn.Module):
-    def __init__(self, parent, anchors):
+    def __init__(self, parent, anchors, softmax=True):
         super(YOLOv3Layer, self).__init__()
         self.device = parent.device
         self.anchors = torch.tensor(anchors, device=self.device)
         self.num_anchors = len(anchors)
         self.grid_size = parent.get_grid_size()
         self.num_features = parent.num_features
+        self.softmax = softmax
 
     def forward(self, x):
         x = x.permute(0, 3, 2, 1)
@@ -88,9 +93,10 @@ class YOLOv3Layer(nn.Module):
 
         x[:, 2] = anchors[:, 0] * torch.exp(x[:, 2])
         x[:, 3] = anchors[:, 1] * torch.exp(x[:, 3])
-        # Add softmax to class probabilities.
-        # NB!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-        x[:, 5:] = torch.sigmoid(x[:, 5:])
+        if self.softmax:
+            x[:, 5:] = torch.softmax(x[:, 5:].contiguous(), dim=1)
+        else:
+            x[:, 5:] = torch.sigmoid(x[:, 5:])
 
         x = x.contiguous().view(*in_shape)
         x = x.permute(0, 3, 2, 1)

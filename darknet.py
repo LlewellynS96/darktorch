@@ -334,7 +334,7 @@ class YOLOv2tiny(nn.Module):
                            for i in range(0, len(anchors), 2)]
                 anchors = [anchors[i] for i in mask]
 
-                detection_layer = YOLOv3Layer(self, anchors)
+                detection_layer = YOLOv3Layer(self, anchors, softmax=True)
                 self.detection_layers.append(detection_layer)
                 module.add_module('detection_{}'.format(index), detection_layer)
 
@@ -343,7 +343,7 @@ class YOLOv2tiny(nn.Module):
                 anchors = [(float(anchors[i]) / self.grid_size[0], float(anchors[i + 1]) / self.grid_size[1])
                            for i in range(0, len(anchors), 2)]
 
-                detection_layer = YOLOv2Layer(self, anchors)
+                detection_layer = YOLOv2Layer(self, anchors, softmax=False)
                 self.detection_layers.append(detection_layer)
                 module.add_module('detection_{}'.format(index), detection_layer)
 
@@ -564,7 +564,7 @@ class YOLOv2tiny(nn.Module):
 
         dataloader = DataLoader(dataset=dataset,
                                 batch_size=batch_size,
-                                shuffle=True,
+                                shuffle=False,
                                 num_workers=NUM_WORKERS)
 
         image_idx_ = []
@@ -601,19 +601,19 @@ class YOLOv2tiny(nn.Module):
                             ids = image_info['id'][idx]
                             set_name = image_info['dataset'][idx]
                             confidence = confidence.item()
-                            top, left, bottom, right = bbox.detach().cpu().numpy()
+                            x1, y1, x2, y2 = bbox.detach().cpu().numpy()
                             width = image_info['width'][idx].item()
                             height = image_info['height'][idx].item()
-                            top *= height
-                            bottom *= height
-                            left *= width
-                            right *= width
+                            x1 *= width
+                            x2 *= width
+                            y1 *= height
+                            y2 *= height
                             export_prediction(cls=name,
                                               image_id=ids,
-                                              top=top,
-                                              left=left,
-                                              bottom=bottom,
-                                              right=right,
+                                              left=x1,
+                                              top=y1,
+                                              right=x2,
+                                              bottom=y2,
                                               confidence=confidence,
                                               set_name=set_name)
 
@@ -628,6 +628,11 @@ class YOLOv2tiny(nn.Module):
                 confidence_.append(confidences)
                 classes_.append(classes)
                 image_idx_.append(image_idx)
+
+        if export:
+            progress = '=' * PRINT_LINE_LEN
+            string = 'Exporting |{}| {:.1f} %'.format(progress, 100.)
+            print('\r' + string, end='')
 
         if len(bboxes_) > 0:
             bboxes = torch.cat(bboxes_).view(-1, 4)

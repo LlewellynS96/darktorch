@@ -1,7 +1,6 @@
 import os
 import torch
 import numpy as np
-import xml.etree.ElementTree as Et
 from torch.utils.data import Dataset
 from torchvision import transforms
 from utils import jaccard, read_classes, get_annotations
@@ -49,6 +48,7 @@ class PascalDatasetYOLO(Dataset):
                         self.images.append(image_desc[0])
 
         self.images = list(set(self.images))  # remove duplicates
+        self.images.sort()
 
     def __getitem__(self, index):
 

@@ -171,6 +171,7 @@ def add_bbox_to_image(image, bbox, confidence, cls):
     ymax *= height
     # Draw a bounding box.
     color = np.random.uniform(0., 255., size=3)
+    print((xmin, ymin), (xmax, ymax))
     cv2.rectangle(image, (xmin, ymax), (xmax, ymin), color, 3)
 
     # Display the label at the top of the bounding box
@@ -191,10 +192,21 @@ def export_prediction(cls, image_id, top, left, bottom, right, confidence,
     filename = os.path.join(directory, filename)
 
     with open(filename, 'a') as f:
-        prediction = [image_id, confidence, top, left, bottom, right, '\n']
-        prediction = map(str, prediction)
+        top = np.maximum(top, 1.)
+        left = np.maximum(left, 1.)
+        bottom = np.maximum(bottom, 1.)
+        right = np.maximum(right, 1.)
+        prediction = [image_id, confidence, np.round(left), np.round(top), np.round(right), np.round(bottom), '\n']
+        prediction = map(to_repr, prediction)
         prediction = ' '.join(prediction)
         f.write(prediction)
+
+
+def to_repr(x):
+    if isinstance(x, (float, np.float, np.float32)):
+        return '{:.6f}'.format(x)
+    else:
+        return str(x)
 
 
 def get_annotations(annotations_dir, img):

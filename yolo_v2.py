@@ -38,7 +38,7 @@ if __name__ == '__main__':
                                  classes='../data/VOC2012/voc.names',
                                  dataset='val',
                                  skip_truncated=False,
-                                 skip_difficult=True,
+                                 skip_difficult=False,
                                  image_size=model.default_image_size,
                                  grid_size=model.grid_size,
                                  anchors=model.anchors,
@@ -60,9 +60,9 @@ if __name__ == '__main__':
                   val_data=val_data,
                   optimizer=optimizer,
                   batch_size=batch_size,
-                  epochs=5,
+                  epochs=2,
                   verbose=True,
-                  multi_scale=False,
+                  multi_scale=True,
                   checkpoint_frequency=5)
 
         model.save_weights('models/yolov2-tiny-voc-custom.weights')
@@ -76,17 +76,18 @@ if __name__ == '__main__':
                                   classes='../data/VOC2012/voc.names',
                                   dataset='test',
                                   skip_truncated=False,
-                                  skip_difficult=True,
+                                  skip_difficult=False,
                                   image_size=model.image_size,
                                   grid_size=model.grid_size,
                                   anchors=model.anchors,
-                                  do_transform=False
+                                  do_transform=False,
                                   )
 
     if predict:
-        model.predict(dataset=test_data,
-                      batch_size=10,
+        model.predict(dataset=val_data,
+                      batch_size=20,
                       confidence_threshold=0.01,
-                      overlap_threshold=0.45,
+                      overlap_threshold=0.4,
                       show=False,
-                      export=True)
+                      export=True
+                      )
