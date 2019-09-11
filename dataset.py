@@ -2,16 +2,49 @@ import os
 import torch
 import numpy as np
 from torch.utils.data import Dataset
-from torchvision import transforms
+import torchvision.transforms
 from utils import jaccard, read_classes, get_annotations
 from PIL import Image
 
 
 class PascalDatasetYOLO(Dataset):
-
+    """
+    This object can be configured to return images and annotations
+    from a PASCAL VOC dataset in a format that is compatible for training
+    the YOLOv2 object detector.
+    """
     def __init__(self, anchors, classes, root_dir='data/VOC2012/', dataset='train', skip_truncated=True,
-                 do_transform=None, skip_difficult=True, image_size=(416, 416), grid_size=(13, 13)):
+                 transforms=False, skip_difficult=True, image_size=(416, 416), grid_size=(13, 13)):
+        """
+        Initialise the dataset object with some network and dataset specific parameters.
 
+        Parameters
+        ----------
+        anchors : Tensor
+                A Tensor object of N anchors given by (x1, y1, x2, y2).
+        classes : str
+                The path to a text file containing the names of the different classes that
+                should be loaded.
+        root_dir : str, optional
+                The root directory where the PASCAL VOC images and annotations are stored.
+        dataset : {'train', 'val', 'trainval', 'test}, optional
+                The specific subset of the PASCAL VOC challenge which should be loaded.
+        skip_truncated : bool,  optional
+                A boolean value to specify whether bounding boxes should be skipped or
+                returned for objects that are truncated.
+        transforms : bool, optional
+                A boolean value to determine whether default image augmentation transforms
+                should be randomly applied to images.
+        skip_difficult : bool,  optional
+                A boolean value to specify whether bounding boxes should be skipped or
+                returned for objects that have been labeled as 'difficult'.
+        image_size : tuple of int, optional
+                A tuple (w, h) describing the desired width and height of the images to
+                be returned.
+        grid_size : tuple of int, optional
+                A tuple (x, y) describing how many horizontal and vertical grids comprise
+                the YOLO model that will load images from this dataset.
+        """
         self.classes = read_classes(classes)
 
         assert set(self.classes).issubset({'aeroplane', 'bicycle', 'bird', 'boat', 'bottle', 'bus', 'car', 'cat',
@@ -37,7 +70,7 @@ class PascalDatasetYOLO(Dataset):
         self.image_size = image_size
         self.grid_size = grid_size
 
-        self.transforms = do_transform
+        self.transforms = transforms
 
         for cls in self.classes:
             file = os.path.join(self.sets_dir, '{}_{}.txt'.format(cls, dataset))
@@ -47,11 +80,30 @@ class PascalDatasetYOLO(Dataset):
                     if image_desc[1] == '1':
                         self.images.append(image_desc[0])
 
-        self.images = list(set(self.images))  # remove duplicates
+        self.images = list(set(self.images))  # Remove duplicates.
         self.images.sort()
 
     def __getitem__(self, index):
+        """
+        Return some image with its meta information and labeled annotations.
 
+        Parameters
+        ----------
+        index : int
+            The index of the image to be returned.
+
+        Returns
+        -------
+        image : Tensor
+            The image at self.images[index] after some optional transforms have been
+            performed as an (w, h, 3) Tensor in the range [0., 1.].
+        image_info : dict
+            A dictionary object containing meta information about the image.
+        target : Tensor
+            A Tensor representing the target output of the YOLOv2 network which was
+            used to initialise the dataset object.
+
+        """
         img = self.images[index]
         # img = '2008_005808'
         image = Image.open(os.path.join(self.images_dir, img + '.jpg'))
@@ -60,12 +112,12 @@ class PascalDatasetYOLO(Dataset):
         random_flip = np.random.random()
         crop_offset = (np.random.random(size=2) * oversize * self.image_size).astype(dtype=np.int)
         if self.transforms:
-            image = transforms.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.25, hue=0.05)(image)
+            image = torchvision.transforms.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.25, hue=0.05)(image)
             image_resize = np.array(self.image_size * np.array((1. + oversize)), dtype=np.int)
             image = image.resize(image_resize)
             if random_flip >= 0.5:
-                image = transforms.functional.hflip(image)
-            image = transforms.functional.crop(image,
+                image = torchvision.transforms.functional.hflip(image)
+            image = torchvision.transforms.functional.crop(image,
                                                *crop_offset[::-1],
                                                *self.image_size[::-1])
         else:
@@ -111,7 +163,7 @@ class PascalDatasetYOLO(Dataset):
                 target[idx[0], idx[1], assign * self.num_features + 4] = 1.
                 target[idx[0], idx[1], assign * self.num_features + 5:(assign + 1) * self.num_features] = self.encode_categorical(name)
 
-        image = transforms.ToTensor()(image)
+        image = torchvision.transforms.ToTensor()(image)
 
         target = torch.tensor(target)
         target = target.permute(2, 0, 1)

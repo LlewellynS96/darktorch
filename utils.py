@@ -140,7 +140,19 @@ def xywh2xyxy(xywh):
 
 
 def read_classes(file):
+    """
+    Utility function that parses a text file containing all the classes
+    that are present in a specific dataset.
+    Parameters
+    ----------
+    file : str
+        A string pointing to the text file to be read.
 
+    Returns
+    -------
+    list
+        A list containing the classes read from the text file.
+    """
     file = open(file, 'r')
     lines = file.read().split('\n')
     lines = [l for l in lines if len(l) > 0]
