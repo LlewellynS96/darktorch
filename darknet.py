@@ -3,6 +3,7 @@ import pickle
 import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader
 from time import time
+from tqdm import tqdm
 from utils import PRINT_LINE_LEN, NUM_WORKERS
 from utils import jaccard, xywh2xyxy, non_maximum_suppression, to_numpy_image, add_bbox_to_image, export_prediction
 from layers import *
@@ -134,41 +135,31 @@ class YOLOv2tiny(nn.Module):
             if multi_scale:
                 random_size = np.random.randint(10, 20) * self.downscale_factor
                 self.set_image_size(random_size, random_size, dataset=train_data)
-            for i, (images, _, targets) in enumerate(train_dataloader, 1):
-                images = images.to(self.device)
-                targets = targets.to(self.device)
-                optimizer.zero_grad()
-                predictions = self(images)
-                loss = self.loss(predictions, targets)
-                batch_loss.append(loss['total'].item())
-                loss['total'].backward()
-                optimizer.step()
-                if verbose:
-                    ii = int(i / len(train_dataloader) * PRINT_LINE_LEN)
-                    progress = '=' * ii
-                    progress += '>'
-                    progress += ' ' * (PRINT_LINE_LEN - ii)
-                    string = 'Epoch: [{}/{}] |{}| [{}/{}] Training Loss: {:.6f}'.format(epoch, epochs, progress, i,
-                                                                                        len(train_dataloader),
-                                                                                        np.mean(batch_loss))
-                    print('\r' + string, end='')
-            train_loss.append(np.mean(batch_loss))
-            progress = '=' * (PRINT_LINE_LEN + 1)
-            if val_data is not None:
-                self.reset_image_size()
-                val_loss.append(self.calculate_loss(val_data, 2 * batch_size))
-                end = time()
-                string = 'Epoch: [{}/{}] |{}| '.format(epoch, epochs, progress)
-                string += 'Training Loss: {:.6f} Validation Loss: {:.6f} Duration: {:.1f}s'.format(train_loss[-1],
-                                                                                                   val_loss[-1],
-                                                                                                   end - start)
-            else:
-                end = time()
-                string = 'Epoch: [{}/{}] |{}| '.format(epoch, epochs, progress)
-                string += 'Training Loss: {:.6f} Validation Loss: N/A Duration: {:.1f}s'.format(train_loss[-1],
-                                                                                                val_loss[-1],
-                                                                                                end - start)
-            print('\r' + string, end='\n')
+            with tqdm(total=len(train_dataloader),
+                      desc='Epoch: [{}/{}]'.format(epoch, epochs),
+                      leave=True,
+                      unit='batches') as pbar:
+                for images, _, targets in train_dataloader:
+                    images = images.to(self.device)
+                    targets = targets.to(self.device)
+                    optimizer.zero_grad()
+                    predictions = self(images)
+                    loss = self.loss(predictions, targets)
+                    batch_loss.append(loss['total'].item())
+                    loss['total'].backward()
+                    optimizer.step()
+                    pbar.set_postfix_str(' Training Loss: {:.6f}'.format(np.mean(batch_loss)))
+                    pbar.update(True)
+                train_loss.append(np.mean(batch_loss))
+                if val_data is not None:
+                    self.reset_image_size()
+                    val_loss.append(self.calculate_loss(val_data, 2 * batch_size))
+                    pbar.set_postfix_str(' Training Loss: {:.6f},  Validation Loss: {:.6f}'.format(train_loss[-1],
+                                                                                                 val_loss[-1]))
+                else:
+                    pbar.set_postfix_str(' Training Loss: {:.6f}'.format(train_loss[-1]))
+                pbar.refresh()
+
             if epoch % checkpoint_frequency == 0:
                 self.save_model(self.name + '_{}.pkl'.format(epoch))
 
