@@ -129,16 +129,23 @@ class YOLOv2tiny(nn.Module):
         train_loss = []
         val_loss = []
 
+        # ==========================================================
+        # PyCharm does not support nested tqdm progress bars, and
+        # thus this feature has been removed.
+        # ==========================================================
+        # with tqdm(total=epochs,
+        #           desc='{} Training PASCAL VOC'.format(self.name),
+        #           leave=True,
+        #           unit='batches') as outer:
         for epoch in range(1, epochs + 1):
             batch_loss = []
-            start = time()
             if multi_scale:
                 random_size = np.random.randint(10, 20) * self.downscale_factor
                 self.set_image_size(random_size, random_size, dataset=train_data)
             with tqdm(total=len(train_dataloader),
                       desc='Epoch: [{}/{}]'.format(epoch, epochs),
                       leave=True,
-                      unit='batches') as pbar:
+                      unit='batches') as inner:
                 for images, _, targets in train_dataloader:
                     images = images.to(self.device)
                     targets = targets.to(self.device)
@@ -148,18 +155,22 @@ class YOLOv2tiny(nn.Module):
                     batch_loss.append(loss['total'].item())
                     loss['total'].backward()
                     optimizer.step()
-                    pbar.set_postfix_str(' Training Loss: {:.6f}'.format(np.mean(batch_loss)))
-                    pbar.update(True)
+                    inner.set_postfix_str(' Training Loss: {:.6f}'.format(np.mean(batch_loss)))
+                    inner.update()
                 train_loss.append(np.mean(batch_loss))
                 if val_data is not None:
                     self.reset_image_size()
                     val_loss.append(self.calculate_loss(val_data, 2 * batch_size))
-                    pbar.set_postfix_str(' Training Loss: {:.6f},  Validation Loss: {:.6f}'.format(train_loss[-1],
+                    inner.set_postfix_str(' Training Loss: {:.6f},  Validation Loss: {:.6f}'.format(train_loss[-1],
                                                                                                  val_loss[-1]))
                 else:
-                    pbar.set_postfix_str(' Training Loss: {:.6f}'.format(train_loss[-1]))
-                pbar.refresh()
-
+                    inner.set_postfix_str(' Training Loss: {:.6f}'.format(train_loss[-1]))
+            # if val_data is not None:
+            #     outer.set_postfix_str(' Training Loss: {:.6f},  Validation Loss: {:.6f}'.format(train_loss[-1],
+            #                                                                                     val_loss[-1]))
+            # else:
+            #     outer.set_postfix_str(' Training Loss: {:.6f}'.format(train_loss[-1]))
+            # outer.update()
             if epoch % checkpoint_frequency == 0:
                 self.save_model(self.name + '_{}.pkl'.format(epoch))
 
@@ -585,7 +596,7 @@ class YOLOv2tiny(nn.Module):
                         plt.show()
 
                 if export:
-                    for idx in range(len(images)):
+                    for idx in tqdm(range(len(images)), desc='Exporting'):
                         mask = image_idx == idx
                         for bbox, cls, confidence in zip(bboxes[mask], classes[mask], confidences[mask]):
                             name = dataset.classes[cls]
@@ -608,22 +619,10 @@ class YOLOv2tiny(nn.Module):
                                               confidence=confidence,
                                               set_name=set_name)
 
-                    ii = int(i / len(dataloader) * PRINT_LINE_LEN)
-                    progress = '=' * ii
-                    progress += '>'
-                    progress += ' ' * (PRINT_LINE_LEN - ii)
-                    string = 'Exporting |{}| {:.1f} %'.format(progress, i / len(dataloader) * 100.)
-                    print('\r' + string, end='')
-
                 bboxes_.append(bboxes)
                 confidence_.append(confidences)
                 classes_.append(classes)
                 image_idx_.append(image_idx)
-
-        if export:
-            progress = '=' * PRINT_LINE_LEN
-            string = 'Exporting |{}| {:.1f} %'.format(progress, 100.)
-            print('\r' + string, end='')
 
         if len(bboxes_) > 0:
             bboxes = torch.cat(bboxes_).view(-1, 4)
