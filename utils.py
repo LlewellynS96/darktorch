@@ -5,7 +5,6 @@ import os
 import xml.etree.ElementTree as Et
 
 
-PRINT_LINE_LEN = 100
 NUM_WORKERS = 0
 
 
