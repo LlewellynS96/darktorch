@@ -76,32 +76,34 @@ def non_maximum_suppression(boxes, scores, overlap=0.5, top_k=101):
 
 
 def jaccard(boxes_a, boxes_b):
-    """Calculate the Intersection of Unions (IoUs) between bounding boxes.
+    """
+    Calculate the Intersection of Unions (IoUs) between bounding boxes.
     IoU is calculated as a ratio of area of the intersection
     and area of the union.
-    Args:
-        boxes_a (array): An array whose shape is :math:`(N, 4)`.
-            :math:`N` is the number of bounding boxes.
-            The dtype should be :obj:`numpy.float32`.
-        boxes_b (array): An array similar to :obj:`bbox_a`,
-            whose shape is :math:`(K, 4)`.
-            The dtype should be :obj:`numpy.float32`.
-    Returns:
-        array:
-        An array whose shape is :math:`(N, K)`. \
-        An element at index :math:`(n, k)` contains IoUs between \
-        :math:`n` th bounding box in :obj:`bbox_a` and :math:`k` th bounding \
-        box in :obj:`bbox_b`.
-    from: https://github.com/chainer/chainercv
+    Parameters
+    ----------
+        boxes_a : Tensor
+            An array whose shape is :math:`(N, 4)`. :math:`N` is the number
+            of bounding boxes. The dtype should be :obj:`float`.
+        boxes_b : Tensor
+            An array similar to :obj:`bbox_a`, whose shape is :math:`(K, 4)`.
+            The dtype should be :obj:`float`.
+    Returns
+    -------
+        Tensor
+            An array whose shape is :math:`(N, K)`. An element at index :math:`(n, k)`
+            contains IoUs between :math:`n` th bounding box in :obj:`bbox_a` and
+            :math:`k` th bounding box in :obj:`bbox_b`.
+    Notes
+    -----
+        from: https://github.com/chainer/chainercv
     """
     assert boxes_a.shape[1] == 4
     assert boxes_b.shape[1] == 4
     assert isinstance(boxes_a, torch.Tensor)
     assert isinstance(boxes_b, torch.Tensor)
 
-    # top left
     tl = torch.max(boxes_a[:, None, :2], boxes_b[:, :2])
-    # bottom right
     br = torch.min(boxes_a[:, None, 2:], boxes_b[:, 2:])
 
     area_a = torch.prod(boxes_a[:, 2:] - boxes_a[:, :2], 1)
@@ -130,13 +132,57 @@ def logit(x):
 
 
 def xywh2xyxy(xywh):
+    """
+    Utility function that converts bounding boxes that are in the form
+    (x_c, y_c, w, h) to (x1, y1, x2, y2).
+    Parameters
+    ----------
+    xywh : Tensor
+        A tensor whose shape is :math:`(N, 4)` where the elements in the
+        0th and 1st column represent the x and y coordinates of the center
+        of the bounding box and the 2nd and 3rd column represent the
+        width and height of the bounding box.
 
+    Returns
+    -------
+    xyxy : Tensor
+        A tensor whose shape is :math:`(N, 4)` where the elements in the
+        0th and 1st column represent the x and y coordinates of the top left
+        corner of the bounding box and the 2nd and 3rd column represent the
+        x and y coordinates of the bottom right corner of the bounding box.
+    """
     xyxy = torch.zeros_like(xywh)
     half = xywh[:, 2:] / 2.
     xyxy[:, :2] = xywh[:, :2] - half
     xyxy[:, 2:] = xywh[:, :2] + half
 
     return xyxy
+
+
+def xyxy2xywh(xyxy):
+    """
+    Utility function that converts bounding boxes that are in the form
+    (x1, y1, x2, y2) to (x_c, y_c, w, h).
+    Parameters
+    ----------
+    xyxy : Tensor
+        A tensor whose shape is :math:`(N, 4)` where the elements in the
+        0th and 1st column represent the x and y coordinates of the top left
+        corner of the bounding box and the 2nd and 3rd column represent the
+        x and y coordinates of the bottom right corner of the bounding box.
+    Returns
+    -------
+    xywh : Tensor
+        A tensor whose shape is :math:`(N, 4)` where the elements in the
+        0th and 1st column represent the x and y coordinates of the center
+        of the bounding box and the 2nd and 3rd column represent the
+        width and height of the bounding box.
+    """
+    xywh = torch.zeros_like(xyxy)
+    xywh[:, :2] = (xyxy[:, ::2] + xyxy[:, 1::2]) / 2.
+    xywh[:, 2:] = xyxy[:, ::2] - xyxy[:, 1::2]
+
+    return xywh
 
 
 def read_classes(file):
@@ -150,7 +196,7 @@ def read_classes(file):
 
     Returns
     -------
-    list
+    classes : list
         A list containing the classes read from the text file.
     """
     file = open(file, 'r')
@@ -162,7 +208,22 @@ def read_classes(file):
 
 
 def to_numpy_image(image, size):
+    """
+    A utility function that converts a Tensor in the range [0., 1.] to a
+    resized ndarray in the range [0, 255].
+    Parameters
+    ----------
+    image : Tensor
+        A Tensor representing the image.
+    size : tuple of int
+        The size (w, h) to which the image should be resized.
 
+    Returns
+    -------
+    image : ndarray
+        A ndarray representation of the image.
+
+    """
     image = image.permute(1, 2, 0).cpu().numpy()
     image *= 255.
     image = image.astype(dtype=np.uint8)
@@ -173,7 +234,24 @@ def to_numpy_image(image, size):
 
 
 def add_bbox_to_image(image, bbox, confidence, cls):
+    """
+    A utility function that adds a bounding box with labels to an image in-place.
 
+    Parameters
+    ----------
+    image : ndarray
+        An ndarray containing the image.
+    bbox : array_like
+        An array (x1, y1, x2, y2) containing the coordinates of the upper-
+        left and bottom-right corners of the bounding box to be added to
+        the image.
+    confidence : float
+        A value representing the confidence of an object within the bounding
+        box. This value will be displayed as part of the label.
+    cls : str
+        The class to which the object in the bounding box belongs. This
+        value will be displayed as part of the label.
+    """
     text = '{} {:.2f}'.format(cls, confidence)
     height, width = image.shape[:2]
     xmin, ymin, xmax, ymax = bbox

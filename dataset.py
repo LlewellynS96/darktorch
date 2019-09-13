@@ -14,7 +14,7 @@ class PascalDatasetYOLO(Dataset):
     the YOLOv2 object detector.
     """
     def __init__(self, anchors, classes, root_dir='data/VOC2012/', dataset='train', skip_truncated=True,
-                 transforms=False, skip_difficult=True, image_size=(416, 416), grid_size=(13, 13)):
+                 do_transforms=False, skip_difficult=True, image_size=(416, 416), grid_size=(13, 13)):
         """
         Initialise the dataset object with some network and dataset specific parameters.
 
@@ -32,7 +32,7 @@ class PascalDatasetYOLO(Dataset):
         skip_truncated : bool,  optional
                 A boolean value to specify whether bounding boxes should be skipped or
                 returned for objects that are truncated.
-        transforms : bool, optional
+        do_transforms : bool, optional
                 A boolean value to determine whether default image augmentation transforms
                 should be randomly applied to images.
         skip_difficult : bool,  optional
@@ -70,7 +70,7 @@ class PascalDatasetYOLO(Dataset):
         self.image_size = image_size
         self.grid_size = grid_size
 
-        self.transforms = transforms
+        self.do_transforms = do_transforms
 
         for cls in self.classes:
             file = os.path.join(self.sets_dir, '{}_{}.txt'.format(cls, dataset))
@@ -111,7 +111,7 @@ class PascalDatasetYOLO(Dataset):
         oversize = .1
         random_flip = np.random.random()
         crop_offset = (np.random.random(size=2) * oversize * self.image_size).astype(dtype=np.int)
-        if self.transforms:
+        if self.do_transforms:
             image = torchvision.transforms.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.25, hue=0.05)(image)
             image_resize = np.array(self.image_size * np.array((1. + oversize)), dtype=np.int)
             image = image.resize(image_resize)
@@ -143,7 +143,7 @@ class PascalDatasetYOLO(Dataset):
                 anchors[:, 1::2] += ymin
                 ious = jaccard(ground_truth, anchors)
                 assign = np.argmax(ious)
-                if self.transforms:
+                if self.do_transforms:
                     if random_flip >= 0.5:
                         tmp = xmin
                         xmin = 1. - xmax

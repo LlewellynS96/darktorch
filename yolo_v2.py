@@ -12,7 +12,7 @@ if __name__ == '__main__':
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-    train = False
+    train = True
     freeze = False
     predict = True
     lr = 1e-5
@@ -31,7 +31,7 @@ if __name__ == '__main__':
                                    image_size=model.image_size,
                                    grid_size=model.grid_size,
                                    anchors=model.anchors,
-                                   do_transform=True
+                                   do_transforms=True
                                    )
 
     val_data = PascalDatasetYOLO(root_dir='../data/VOC2012/',
@@ -42,7 +42,7 @@ if __name__ == '__main__':
                                  image_size=model.default_image_size,
                                  grid_size=model.grid_size,
                                  anchors=model.anchors,
-                                 do_transform=False
+                                 do_transforms=False
                                  )
 
     model.load_weights('models/yolov2-tiny-voc.weights')
@@ -80,7 +80,7 @@ if __name__ == '__main__':
                                   image_size=model.image_size,
                                   grid_size=model.grid_size,
                                   anchors=model.anchors,
-                                  do_transform=False,
+                                  do_transforms=False,
                                   )
 
     if predict:
