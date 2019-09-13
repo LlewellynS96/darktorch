@@ -575,67 +575,72 @@ class YOLOv2tiny(nn.Module):
         classes_ = []
 
         with torch.no_grad():
-            for i, (images, image_info, targets) in enumerate(dataloader):
-                images = images.to(self.device)
-                predictions = self(images)
-                # predictions = targets
-                bboxes, classes, confidences, image_idx = self.process_bboxes(predictions,
-                                                                              confidence_threshold=confidence_threshold,
-                                                                              overlap_threshold=overlap_threshold,
-                                                                              nms=True)
-                if show:
-                    for idx, image in enumerate(images):
-                        width = image_info['width'][idx]
-                        height = image_info['height'][idx]
-                        image = to_numpy_image(image, size=(width, height))
-                        mask = image_idx == idx
-                        for bbox, cls, confidence in zip(bboxes[mask], classes[mask], confidences[mask]):
-                            name = dataset.classes[cls]
-                            add_bbox_to_image(image, bbox, confidence, name)
-                        plt.imshow(image)
-                        plt.show()
+            with tqdm(total=len(dataloader),
+                      desc='Exporting',
+                      leave=True) as pbar:
+                for images, image_info, targets in dataloader:
+                    images = images.to(self.device)
+                    predictions = self(images)
+                    # predictions = targets
+                    bboxes, classes, confidences, image_idx = self.process_bboxes(predictions,
+                                                                                  confidence_threshold=confidence_threshold,
+                                                                                  overlap_threshold=overlap_threshold,
+                                                                                  nms=True)
+                    if show:
+                        for idx, image in enumerate(images):
+                            width = image_info['width'][idx]
+                            height = image_info['height'][idx]
+                            image = to_numpy_image(image, size=(width, height))
+                            mask = image_idx == idx
+                            for bbox, cls, confidence in zip(bboxes[mask], classes[mask], confidences[mask]):
+                                name = dataset.classes[cls]
+                                add_bbox_to_image(image, bbox, confidence, name)
+                            plt.imshow(image)
+                            plt.show()
 
-                if export:
-                    for idx in tqdm(range(len(images)), desc='Exporting'):
-                        mask = image_idx == idx
-                        for bbox, cls, confidence in zip(bboxes[mask], classes[mask], confidences[mask]):
-                            name = dataset.classes[cls]
-                            ids = image_info['id'][idx]
-                            set_name = image_info['dataset'][idx]
-                            confidence = confidence.item()
-                            x1, y1, x2, y2 = bbox.detach().cpu().numpy()
-                            width = image_info['width'][idx].item()
-                            height = image_info['height'][idx].item()
-                            x1 *= width
-                            x2 *= width
-                            y1 *= height
-                            y2 *= height
-                            export_prediction(cls=name,
-                                              image_id=ids,
-                                              left=x1,
-                                              top=y1,
-                                              right=x2,
-                                              bottom=y2,
-                                              confidence=confidence,
-                                              set_name=set_name)
+                    if export:
+                        for idx in range(len(images)):
+                            mask = image_idx == idx
+                            for bbox, cls, confidence in zip(bboxes[mask], classes[mask], confidences[mask]):
+                                name = dataset.classes[cls]
+                                ids = image_info['id'][idx]
+                                set_name = image_info['dataset'][idx]
+                                confidence = confidence.item()
+                                x1, y1, x2, y2 = bbox.detach().cpu().numpy()
+                                width = image_info['width'][idx].item()
+                                height = image_info['height'][idx].item()
+                                x1 *= width
+                                x2 *= width
+                                y1 *= height
+                                y2 *= height
+                                export_prediction(cls=name,
+                                                  image_id=ids,
+                                                  left=x1,
+                                                  top=y1,
+                                                  right=x2,
+                                                  bottom=y2,
+                                                  confidence=confidence,
+                                                  set_name=set_name)
 
-                bboxes_.append(bboxes)
-                confidence_.append(confidences)
-                classes_.append(classes)
-                image_idx_.append(image_idx)
+                    bboxes_.append(bboxes)
+                    confidence_.append(confidences)
+                    classes_.append(classes)
+                    image_idx_.append(image_idx)
 
-        if len(bboxes_) > 0:
-            bboxes = torch.cat(bboxes_).view(-1, 4)
-            classes = torch.cat(classes_).flatten()
-            confidence = torch.cat(confidence_).flatten()
-            image_idx = torch.cat(image_idx_).flatten()
+                    pbar.update()
 
-            return bboxes, classes, confidence, image_idx
-        else:
-            return torch.tensor([], device=self.device), \
-                   torch.tensor([], device=self.device), \
-                   torch.tensor([], device=self.device), \
-                   torch.tensor([], device=self.device)
+            if len(bboxes_) > 0:
+                bboxes = torch.cat(bboxes_).view(-1, 4)
+                classes = torch.cat(classes_).flatten()
+                confidence = torch.cat(confidence_).flatten()
+                image_idx = torch.cat(image_idx_).flatten()
+
+                return bboxes, classes, confidence, image_idx
+            else:
+                return torch.tensor([], device=self.device), \
+                       torch.tensor([], device=self.device), \
+                       torch.tensor([], device=self.device), \
+                       torch.tensor([], device=self.device)
 
     def freeze(self, freeze_last_layer=True):
         last_set = False

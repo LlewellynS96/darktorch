@@ -60,7 +60,7 @@ if __name__ == '__main__':
                   val_data=val_data,
                   optimizer=optimizer,
                   batch_size=batch_size,
-                  epochs=2,
+                  epochs=1,
                   verbose=True,
                   multi_scale=True,
                   checkpoint_frequency=5)
