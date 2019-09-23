@@ -61,7 +61,6 @@ if __name__ == '__main__':
                   optimizer=optimizer,
                   batch_size=batch_size,
                   epochs=1,
-                  verbose=True,
                   multi_scale=True,
                   checkpoint_frequency=5)
 

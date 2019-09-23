@@ -57,13 +57,11 @@ class YOLOv2tiny(nn.Module):
 
         assert predictions.shape == targets.shape
 
-        batch_size = targets.shape[0]
-
         lambda_coord = 5.
         lambda_obj = 1.
         lambda_noobj = 0.5
 
-        loss = {}
+        loss = dict()
 
         targets = targets.permute(0, 2, 3, 1)
         predictions = predictions.permute(0, 3, 2, 1)
@@ -116,7 +114,7 @@ class YOLOv2tiny(nn.Module):
 
         return loss
 
-    def fit(self, train_data, optimizer, batch_size=1, epochs=1, verbose=True,
+    def fit(self, train_data, optimizer, batch_size=1, epochs=1,
             val_data=None, shuffle=True, multi_scale=True, checkpoint_frequency=100):
 
         self.train()
@@ -186,11 +184,38 @@ class YOLOv2tiny(nn.Module):
             layer.grid_size = x, y
 
     def save_model(self, name):
-
+        """
+        Save the entire YOLOv2tiny model by using the built-in Python
+        pickle module.
+        Parameters
+        ----------
+        name
+            The filename where the model should be saved.
+        """
         pickle.dump(self, open(name, 'wb'), protocol=pickle.HIGHEST_PROTOCOL)
 
     def calculate_loss(self, data, batch_size, fraction=0.05):
+        """
+        Calculates the loss for a random partition of a given dataset without
+        tracking gradients. Useful for displaying the validation loss during
+        training.
+        Parameters
+        ----------
+        data : PascalDatasetYOLO
+            A dataset object which returns images and targets to use for calculating
+            the loss. Only a fraction of the images in the dataset will be tested.
+        batch_size : int
+            The number of images to load per batch. This should not influence the value
+            that the function returns, but will affect performance.
+        fraction : float
+            The fraction of images from data that the loss should be calculated for.
 
+        Returns
+        -------
+        float
+            The mean loss over the fraction of the images that were sampled from
+            the data.
+        """
         val_dataloader = DataLoader(dataset=data,
                                     batch_size=batch_size,
                                     shuffle=True,
@@ -658,7 +683,14 @@ class YOLOv2tiny(nn.Module):
             param.requires_grad = True
 
     def get_trainable_parameters(self):
-
+        """
+        Returns a list of a model's trainable parameters by checking which
+        parameters are tracking their gradients.
+        Returns
+        -------
+        list
+            A list containing the trainable parameters.
+        """
         trainable_parameters = []
         for param in self.parameters():
             if param.requires_grad:
