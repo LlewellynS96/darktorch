@@ -164,7 +164,6 @@ class PascalDatasetYOLO(Dataset):
                 target[idx[0], idx[1], assign * self.num_features + 5:(assign + 1) * self.num_features] = self.encode_categorical(name)
 
         image = torchvision.transforms.ToTensor()(image)
-        image = torchvision.transforms.Normalize(mean=VGG_MEAN)(image)
 
         target = torch.tensor(target)
         target = target.permute(2, 0, 1)

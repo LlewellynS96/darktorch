@@ -12,11 +12,11 @@ if __name__ == '__main__':
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-    train = True
+    train = False
     freeze = False
     predict = True
     lr = 1e-5
-    batch_size = 10
+    batch_size = 20
 
     model = YOLOv2tiny(model='models/yolov2-tiny-voc.cfg',
                        device=device)
@@ -25,7 +25,7 @@ if __name__ == '__main__':
 
     train_data = PascalDatasetYOLO(root_dir='../data/VOC2012/',
                                    classes='../data/VOC2012/voc.names',
-                                   dataset='train',
+                                   dataset='trainval',
                                    skip_truncated=False,
                                    skip_difficult=False,
                                    image_size=model.image_size,
@@ -45,7 +45,8 @@ if __name__ == '__main__':
                                  do_transforms=False
                                  )
 
-    model.load_weights('models/yolov2-tiny-voc.weights')
+    # model.load_all_weights('models/yolov2-tiny-voc-custom.weights')
+    model.load_imagenet_weights('models/darknet.weights')
 
     if freeze:
         model.freeze(freeze_last_layer=False)
@@ -56,13 +57,13 @@ if __name__ == '__main__':
 
         optimizer = optim.SGD(model.get_trainable_parameters(), lr=lr, momentum=0.99)
 
-        model.fit(train_data=train_data,
+        model.training(train_data=train_data,
                   val_data=val_data,
                   optimizer=optimizer,
                   batch_size=batch_size,
                   epochs=1,
-                  multi_scale=True,
-                  checkpoint_frequency=5)
+                  multi_scale=False,
+                  checkpoint_frequency=20)
 
         model.save_weights('models/yolov2-tiny-voc-custom.weights')
 
@@ -85,8 +86,8 @@ if __name__ == '__main__':
     if predict:
         model.predict(dataset=val_data,
                       batch_size=20,
-                      confidence_threshold=0.01,
+                      confidence_threshold=0.8,
                       overlap_threshold=0.4,
-                      show=False,
-                      export=True
+                      show=True,
+                      export=False
                       )

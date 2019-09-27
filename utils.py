@@ -260,7 +260,6 @@ def add_bbox_to_image(image, bbox, confidence, cls):
     ymax *= height
     # Draw a bounding box.
     color = np.random.uniform(0., 255., size=3)
-    print((xmin, ymin), (xmax, ymax))
     cv2.rectangle(image, (xmin, ymax), (xmax, ymin), color, 3)
 
     # Display the label at the top of the bounding box
@@ -331,6 +330,19 @@ def export_prediction(cls, image_id, top, left, bottom, right, confidence,
 
 
 def to_repr(x):
+    """
+    A small utility function that converts floats and strings to
+    a fixed string format.
+    Parameters
+    ----------
+    x
+        An input for which a string representation should be provided.
+    Returns
+    -------
+    str
+        A string representation of the input.
+
+    """
     if isinstance(x, (float, np.float, np.float32)):
         return '{:.6f}'.format(x)
     else:
