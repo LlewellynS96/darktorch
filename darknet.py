@@ -388,17 +388,19 @@ class YOLOv2tiny(nn.Module):
 
         return self.net_info, self.layers
 
-    def load_weights(self, file, all_layers=True):
+    def load_weights(self, file, only_imagenet=False):
 
         f = open(file, "rb")
         weights = np.fromfile(f, offset=16, dtype=np.float32)
 
         ptr = 0
-        if all_layers:
+
+        if not only_imagenet:
             layers = len(self.layers)
         else:
             layers = len(self.layers) - 3
-        for i in range():
+
+        for i in range(layers):
 
             module_type = self.blocks[i]["type"]
 
@@ -448,67 +450,12 @@ class YOLOv2tiny(nn.Module):
 
                 conv_layer.weight.data.copy_(conv_weights)
 
-        assert ptr == len(weights), 'Weights file does not match model.'
-
-    def load_imagenet_weights(self, file):
-
-        f = open(file, "rb")
-        weights = np.fromfile(f, offset=16, dtype=np.float32)
-
-        ptr = 0
-        for i in range(len(self.layers) - 3):
-
-            module_type = self.blocks[i]["type"]
-
-            if module_type == "convolutional":
-                module = self.layers[i]
-                try:
-                    batch_normalize = int(self.blocks[i]["batch_normalize"])
-                except KeyError:
-                    batch_normalize = 0
-
-                conv_layer = module[0]
-
-                if batch_normalize:
-                    bn_layer = module[1]
-
-                    num_bn_biases = bn_layer.bias.numel()
-                    bn_biases = torch.from_numpy(weights[ptr:ptr + num_bn_biases])
-                    ptr += num_bn_biases
-                    bn_weights = torch.from_numpy(weights[ptr: ptr + num_bn_biases])
-                    ptr += num_bn_biases
-                    bn_running_mean = torch.from_numpy(weights[ptr: ptr + num_bn_biases])
-                    ptr += num_bn_biases
-                    bn_running_var = torch.from_numpy(weights[ptr: ptr + num_bn_biases])
-                    ptr += num_bn_biases
-                    bn_biases = bn_biases.view_as(bn_layer.bias.data)
-                    bn_weights = bn_weights.view_as(bn_layer.weight.data)
-                    bn_running_mean = bn_running_mean.view_as(bn_layer.running_mean)
-                    bn_running_var = bn_running_var.view_as(bn_layer.running_var)
-
-                    bn_layer.bias.data.copy_(bn_biases)
-                    bn_layer.weight.data.copy_(bn_weights)
-                    bn_layer.running_mean.copy_(bn_running_mean)
-                    bn_layer.running_var.copy_(bn_running_var)
-
-                else:
-                    num_biases = conv_layer.bias.numel()
-                    conv_biases = torch.from_numpy(weights[ptr: ptr + num_biases])
-                    ptr = ptr + num_biases
-                    conv_biases = conv_biases.view_as(conv_layer.bias.data)
-
-                    conv_layer.bias.data.copy_(conv_biases)
-
-                num_weights = conv_layer.weight.numel()
-                conv_weights = torch.from_numpy(weights[ptr:ptr + num_weights])
-                ptr = ptr + num_weights
-                conv_weights = conv_weights.view_as(conv_layer.weight.data)
-
-                conv_layer.weight.data.copy_(conv_weights)
-
-        # Ensure that the size of the ImageNet backbone matches that of the YOLO backbone.
-        # The last layer of the ImageNet backbone (weights and biases) will not be loaded.
-        assert ptr == len(weights) - 1000 * 1024 - 1000, 'Weights file does not match model.'
+        if not only_imagenet:
+            assert ptr == len(weights), 'Weights file does not match model.'
+        else:
+            # Ensure that the size of the ImageNet backbone matches that of the YOLO backbone.
+            # The last layer of the ImageNet backbone (weights and biases) will not be loaded.
+            assert ptr == len(weights) - 1000 * 1024 - 1000, 'Weights file does not match model.'
 
     def save_weights(self, file):
 

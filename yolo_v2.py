@@ -46,7 +46,7 @@ if __name__ == '__main__':
                                  )
 
     # model.load_all_weights('models/yolov2-tiny-voc-custom.weights')
-    model.load_imagenet_weights('models/darknet.weights')
+    model.load_weights('models/darknet.weights', only_imagenet=False)
 
     if freeze:
         model.freeze(freeze_last_layer=False)
