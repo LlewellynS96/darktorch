@@ -57,9 +57,9 @@ class YOLOv2tiny(nn.Module):
 
         assert predictions.shape == targets.shape
 
-        lambda_coord = 5.
-        lambda_obj = 1.
-        lambda_noobj = 0.5
+        lambda_coord = 1.
+        lambda_obj = 0.5
+        lambda_noobj = 2.
 
         loss = dict()
 
@@ -78,7 +78,11 @@ class YOLOv2tiny(nn.Module):
             ious = jaccard(predictions_xyxy, targets_xyxy)
             ious, _ = torch.max(ious, dim=1)
 
-            loss['object'] = lambda_obj * nn.MSELoss(reduction=REDUCTION)(predictions[obj_mask, 4], ious[obj_mask])
+            if self.focal_loss:
+                loss['object'] = lambda_obj * FocalLoss(reduction=REDUCTION)(predictions[obj_mask, 4],
+                                                                             ious[obj_mask].detach())
+            else:
+                loss['object'] = lambda_obj * nn.MSELoss(reduction=REDUCTION)(predictions[obj_mask, 4], ious[obj_mask])
 
             loss['coord'] = nn.MSELoss(reduction=REDUCTION)(predictions[obj_mask, 0], targets[obj_mask, 0])
             loss['coord'] += nn.MSELoss(reduction=REDUCTION)(predictions[obj_mask, 1], targets[obj_mask, 1])
@@ -90,17 +94,17 @@ class YOLOv2tiny(nn.Module):
 
             loss['class'] = 0.
             for cls in range(self.num_classes):
-                if self.focal_loss == 'focal':
+                if self.focal_loss:
                     loss['class'] += FocalLoss(reduction=REDUCTION)(predictions[obj_mask, 5 + cls],
                                                                     targets[obj_mask, 5 + cls])
                 else:
                     loss['class'] += nn.MSELoss(reduction=REDUCTION)(predictions[obj_mask, 5 + cls],
                                                                      targets[obj_mask, 5 + cls])
-            loss['class'] /= self.num_classes
+            loss['class'] /= lambda_obj * self.num_classes
 
-            iou_threshold = 0.6
-            noobj_mask = torch.nonzero(ious > iou_threshold).squeeze()
-            targets[noobj_mask, 4] = 2.
+            iou_threshold = 0.9
+            mask = torch.nonzero(ious > iou_threshold).squeeze()
+            targets[mask, 4] = 2.
             noobj_mask = torch.nonzero(targets[:, 4] == 0.).squeeze()
             loss['no_object'] = lambda_noobj * nn.MSELoss(reduction=REDUCTION)(predictions[noobj_mask, 4],
                                                                                targets[noobj_mask, 4])
@@ -114,7 +118,7 @@ class YOLOv2tiny(nn.Module):
 
         return loss
 
-    def fit(self, train_data, optimizer, batch_size=1, epochs=1,
+    def training(self, train_data, optimizer, batch_size=1, epochs=1,
             val_data=None, shuffle=True, multi_scale=True, checkpoint_frequency=100):
 
         self.train()
@@ -384,13 +388,17 @@ class YOLOv2tiny(nn.Module):
 
         return self.net_info, self.layers
 
-    def load_weights(self, file):
+    def load_weights(self, file, all_layers=True):
 
         f = open(file, "rb")
         weights = np.fromfile(f, offset=16, dtype=np.float32)
 
         ptr = 0
-        for i in range(len(self.layers)):
+        if all_layers:
+            layers = len(self.layers)
+        else:
+            layers = len(self.layers) - 3
+        for i in range():
 
             module_type = self.blocks[i]["type"]
 
@@ -442,6 +450,66 @@ class YOLOv2tiny(nn.Module):
 
         assert ptr == len(weights), 'Weights file does not match model.'
 
+    def load_imagenet_weights(self, file):
+
+        f = open(file, "rb")
+        weights = np.fromfile(f, offset=16, dtype=np.float32)
+
+        ptr = 0
+        for i in range(len(self.layers) - 3):
+
+            module_type = self.blocks[i]["type"]
+
+            if module_type == "convolutional":
+                module = self.layers[i]
+                try:
+                    batch_normalize = int(self.blocks[i]["batch_normalize"])
+                except KeyError:
+                    batch_normalize = 0
+
+                conv_layer = module[0]
+
+                if batch_normalize:
+                    bn_layer = module[1]
+
+                    num_bn_biases = bn_layer.bias.numel()
+                    bn_biases = torch.from_numpy(weights[ptr:ptr + num_bn_biases])
+                    ptr += num_bn_biases
+                    bn_weights = torch.from_numpy(weights[ptr: ptr + num_bn_biases])
+                    ptr += num_bn_biases
+                    bn_running_mean = torch.from_numpy(weights[ptr: ptr + num_bn_biases])
+                    ptr += num_bn_biases
+                    bn_running_var = torch.from_numpy(weights[ptr: ptr + num_bn_biases])
+                    ptr += num_bn_biases
+                    bn_biases = bn_biases.view_as(bn_layer.bias.data)
+                    bn_weights = bn_weights.view_as(bn_layer.weight.data)
+                    bn_running_mean = bn_running_mean.view_as(bn_layer.running_mean)
+                    bn_running_var = bn_running_var.view_as(bn_layer.running_var)
+
+                    bn_layer.bias.data.copy_(bn_biases)
+                    bn_layer.weight.data.copy_(bn_weights)
+                    bn_layer.running_mean.copy_(bn_running_mean)
+                    bn_layer.running_var.copy_(bn_running_var)
+
+                else:
+                    num_biases = conv_layer.bias.numel()
+                    conv_biases = torch.from_numpy(weights[ptr: ptr + num_biases])
+                    ptr = ptr + num_biases
+                    conv_biases = conv_biases.view_as(conv_layer.bias.data)
+
+                    conv_layer.bias.data.copy_(conv_biases)
+
+                num_weights = conv_layer.weight.numel()
+                conv_weights = torch.from_numpy(weights[ptr:ptr + num_weights])
+                ptr = ptr + num_weights
+                conv_weights = conv_weights.view_as(conv_layer.weight.data)
+
+                conv_layer.weight.data.copy_(conv_weights)
+
+        # Ensure that the size of the ImageNet backbone matches that of the YOLO backbone.
+        # The last layer of the ImageNet backbone (weights and biases) will not be loaded.
+        assert ptr == len(weights) - 1000 * 1024 - 1000, 'Weights file does not match model.'
+
     def save_weights(self, file):
 
         f = open(file, 'wb')
@@ -457,7 +525,7 @@ class YOLOv2tiny(nn.Module):
                 module = self.layers[i]
                 try:
                     batch_normalize = int(self.blocks[i]["batch_normalize"])
-                except:
+                except KeyError:
                     batch_normalize = 0
 
                 conv_layer = module[0]
@@ -469,7 +537,6 @@ class YOLOv2tiny(nn.Module):
                     bn_layer.weight.data.detach().cpu().numpy().tofile(f)
                     bn_layer.running_mean.detach().cpu().numpy().tofile(f)
                     bn_layer.running_var.detach().cpu().numpy().tofile(f)
-
 
                 else:
                     conv_layer.bias.data.detach().cpu().numpy().tofile(f)
