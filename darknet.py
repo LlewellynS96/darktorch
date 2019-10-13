@@ -2,7 +2,6 @@ import numpy as np
 import pickle
 import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader
-from time import time
 from tqdm import tqdm
 from utils import NUM_WORKERS
 from utils import jaccard, xywh2xyxy, non_maximum_suppression, to_numpy_image, add_bbox_to_image, export_prediction
@@ -118,7 +117,7 @@ class YOLOv2tiny(nn.Module):
 
         return loss
 
-    def training(self, train_data, optimizer, batch_size=1, epochs=1,
+    def fit(self, train_data, optimizer, batch_size=1, epochs=1,
             val_data=None, shuffle=True, multi_scale=True, checkpoint_frequency=100):
 
         self.train()
@@ -164,7 +163,7 @@ class YOLOv2tiny(nn.Module):
                     self.reset_image_size()
                     val_loss.append(self.calculate_loss(val_data, 2 * batch_size))
                     inner.set_postfix_str(' Training Loss: {:.6f},  Validation Loss: {:.6f}'.format(train_loss[-1],
-                                                                                                 val_loss[-1]))
+                                                                                                    val_loss[-1]))
                 else:
                     inner.set_postfix_str(' Training Loss: {:.6f}'.format(train_loss[-1]))
             # if val_data is not None:
@@ -635,6 +634,7 @@ class YOLOv2tiny(nn.Module):
                                 name = dataset.classes[cls]
                                 add_bbox_to_image(image, bbox, confidence, name)
                             plt.imshow(image)
+                            # plt.axis('off')
                             plt.show()
 
                     if export:
@@ -653,6 +653,7 @@ class YOLOv2tiny(nn.Module):
                                 y1 *= height
                                 y2 *= height
                                 export_prediction(cls=name,
+                                                  prefix=self.name,
                                                   image_id=ids,
                                                   left=x1,
                                                   top=y1,

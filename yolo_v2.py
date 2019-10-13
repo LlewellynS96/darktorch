@@ -1,5 +1,6 @@
 import numpy as np
 import torchsummary
+import pickle
 from torch import optim
 from dataset import PascalDatasetYOLO
 from layers import *
@@ -15,8 +16,6 @@ if __name__ == '__main__':
     train = False
     freeze = False
     predict = True
-    lr = 1e-5
-    batch_size = 20
 
     model = YOLOv2tiny(model='models/yolov2-tiny-voc.cfg',
                        device=device)
@@ -45,8 +44,19 @@ if __name__ == '__main__':
                                  do_transforms=False
                                  )
 
-    # model.load_all_weights('models/yolov2-tiny-voc-custom.weights')
-    model.load_weights('models/darknet.weights', only_imagenet=False)
+    test_data = PascalDatasetYOLO(root_dir='../data/VOC2007/',
+                                  classes='../data/VOC2012/voc.names',
+                                  dataset='test',
+                                  skip_truncated=False,
+                                  skip_difficult=False,
+                                  image_size=model.default_image_size,
+                                  grid_size=model.grid_size,
+                                  anchors=model.anchors,
+                                  do_transforms=False
+                                  )
+
+    # model.load_weights('models/darknet.weights', only_imagenet=True)
+    model.load_weights('models/yolov2-tiny-voc.weights')
 
     if freeze:
         model.freeze(freeze_last_layer=False)
@@ -55,15 +65,15 @@ if __name__ == '__main__':
         torch.random.manual_seed(12345)
         np.random.seed(12345)
 
-        optimizer = optim.SGD(model.get_trainable_parameters(), lr=lr, momentum=0.99)
+        optimizer = optim.SGD(model.get_trainable_parameters(), lr=1e-5, momentum=0.99)
 
-        model.training(train_data=train_data,
+        model.fit(train_data=train_data,
                   val_data=val_data,
                   optimizer=optimizer,
-                  batch_size=batch_size,
-                  epochs=1,
-                  multi_scale=False,
-                  checkpoint_frequency=20)
+                  batch_size=20,
+                  epochs=80,
+                  multi_scale=True,
+                  checkpoint_frequency=80)
 
         model.save_weights('models/yolov2-tiny-voc-custom.weights')
 
@@ -72,22 +82,13 @@ if __name__ == '__main__':
     torch.random.manual_seed(12345)
     np.random.seed(12345)
 
-    test_data = PascalDatasetYOLO(root_dir='/home/llewellyn/developer/volume/data/VOC2007/',
-                                  classes='../data/VOC2012/voc.names',
-                                  dataset='test',
-                                  skip_truncated=False,
-                                  skip_difficult=False,
-                                  image_size=model.image_size,
-                                  grid_size=model.grid_size,
-                                  anchors=model.anchors,
-                                  do_transforms=False,
-                                  )
+    model = pickle.load(open('YOLOv2-tiny_60.pkl', 'rb'))
 
     if predict:
-        model.predict(dataset=val_data,
+        model.predict(dataset=train_data,
                       batch_size=20,
-                      confidence_threshold=0.8,
-                      overlap_threshold=0.4,
+                      confidence_threshold=0.6,
+                      overlap_threshold=0.3,
                       show=True,
                       export=False
                       )

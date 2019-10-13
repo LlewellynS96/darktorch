@@ -57,53 +57,6 @@ class YOLOv2Layer(nn.Module):
         return x
 
 
-class YOLOv3Layer(nn.Module):
-    def __init__(self, parent, anchors, softmax=True):
-        super(YOLOv3Layer, self).__init__()
-        self.device = parent.device
-        self.anchors = torch.tensor(anchors, device=self.device)
-        self.num_anchors = len(anchors)
-        self.grid_size = parent.get_grid_size()
-        self.num_features = parent.num_features
-        self.softmax = softmax
-
-    def forward(self, x):
-        x = x.permute(0, 3, 2, 1)
-        in_shape = x.shape
-        x = x.contiguous().view(-1, self.num_features)
-
-        # Convert t_o --> IoU
-        x[:, 4] = torch.sigmoid(x[:, 4])
-
-        # Convert t_x and t_y --> x and y (ignoring the offset).
-        x[:, :4] = torch.sigmoid(x[:, :4])
-        # Add the offset.
-        offsets = torch.arange(0, int(x.shape[0] / in_shape[0]), device=self.device)
-        h_offsets = offsets / self.grid_size[0] / self.num_anchors
-        v_offsets = (offsets - (h_offsets * self.grid_size[0] * self.num_anchors)) / self.num_anchors
-        h_offsets = h_offsets.repeat(in_shape[0])
-        v_offsets = v_offsets.repeat(in_shape[0])
-        x[:, 0] += h_offsets.float()
-        x[:, 1] += v_offsets.float()
-        x[:, 0] /= self.grid_size[0]
-        x[:, 1] /= self.grid_size[1]
-
-        # Convert t_w and t_h --> w and h.
-        anchors = self.anchors.repeat(in_shape[0] * self.grid_size[0] * self.grid_size[1], 1)
-
-        x[:, 2] = anchors[:, 0] * torch.exp(x[:, 2])
-        x[:, 3] = anchors[:, 1] * torch.exp(x[:, 3])
-        if self.softmax:
-            x[:, 5:] = torch.softmax(x[:, 5:].contiguous(), dim=1)
-        else:
-            x[:, 5:] = torch.sigmoid(x[:, 5:])
-
-        x = x.contiguous().view(*in_shape)
-        x = x.permute(0, 3, 2, 1)
-
-        return x
-
-
 class Swish(nn.Module):
 
     def __init__(self, beta=1.0, learnable=True):

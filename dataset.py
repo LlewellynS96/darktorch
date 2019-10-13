@@ -105,7 +105,7 @@ class PascalDatasetYOLO(Dataset):
 
         """
         img = self.images[index]
-        # img = '2008_005808'
+        img = '2008_005808'
         image = Image.open(os.path.join(self.images_dir, img + '.jpg'))
         image_info = {'id': img, 'width': image.width, 'height': image.height, 'dataset': self.dataset}
         oversize = .1

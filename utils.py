@@ -252,6 +252,7 @@ def add_bbox_to_image(image, bbox, confidence, cls):
         value will be displayed as part of the label.
     """
     text = '{} {:.2f}'.format(cls, confidence)
+    # text = '{}'.format(cls)
     height, width = image.shape[:2]
     xmin, ymin, xmax, ymax = bbox
     xmin *= width
