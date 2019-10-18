@@ -105,7 +105,6 @@ class PascalDatasetYOLO(Dataset):
 
         """
         img = self.images[index]
-        img = '2008_005808'
         image = Image.open(os.path.join(self.images_dir, img + '.jpg'))
         image_info = {'id': img, 'width': image.width, 'height': image.height, 'dataset': self.dataset}
         oversize = .1
@@ -133,9 +132,24 @@ class PascalDatasetYOLO(Dataset):
                 continue
             if name not in self.classes:
                 continue
+            if self.do_transforms:
+                if random_flip >= 0.5:
+                    tmp = xmin
+                    xmin = 1. - xmax
+                    xmax = 1. - tmp
+                xmin = (xmin * image_resize[0] - crop_offset[0]) / self.image_size[0]
+                xmax = (xmax * image_resize[0] - crop_offset[0]) / self.image_size[0]
+                ymin = (ymin * image_resize[1] - crop_offset[1]) / self.image_size[1]
+                ymax = (ymax * image_resize[1] - crop_offset[1]) / self.image_size[1]
+                xmin = np.clip(xmin, a_min=0, a_max=1.)
+                xmax = np.clip(xmax, a_min=0, a_max=1.)
+                ymin = np.clip(ymin, a_min=0, a_max=1.)
+                ymax = np.clip(ymax, a_min=0, a_max=1.)
+                if xmin == xmax or ymin == ymax:
+                    continue
             cell_dims = 1. / self.grid_size[0], 1. / self.grid_size[1]
             idx = int(np.floor((xmax + xmin) / 2. / cell_dims[0])), int(np.floor((ymax + ymin) / 2. / cell_dims[1]))
-            if target[idx[0], idx[1], ::self.num_features].all() == 0:
+            if target[idx[0], idx[1], 4::self.num_features].all() == 0:
                 ground_truth = torch.tensor(np.array([[xmin, ymin, xmax, ymax]], dtype=np.float32))
                 anchors = torch.zeros((self.num_anchors, 4))
                 anchors[:, 2:] = self.anchors.clone()
@@ -143,19 +157,6 @@ class PascalDatasetYOLO(Dataset):
                 anchors[:, 1::2] += ymin
                 ious = jaccard(ground_truth, anchors)
                 assign = np.argmax(ious)
-                if self.do_transforms:
-                    if random_flip >= 0.5:
-                        tmp = xmin
-                        xmin = 1. - xmax
-                        xmax = 1. - tmp
-                    xmin = (xmin * image_resize[0] - crop_offset[0]) / self.image_size[0]
-                    xmax = (xmax * image_resize[0] - crop_offset[0]) / self.image_size[0]
-                    ymin = (ymin * image_resize[1] - crop_offset[1]) / self.image_size[1]
-                    ymax = (ymax * image_resize[1] - crop_offset[1]) / self.image_size[1]
-                    xmin = np.clip(xmin, a_min=0, a_max=1.)
-                    xmax = np.clip(xmax, a_min=0, a_max=1.)
-                    ymin = np.clip(ymin, a_min=0, a_max=1.)
-                    ymax = np.clip(ymax, a_min=0, a_max=1.)
                 target[idx[0], idx[1], assign * self.num_features + 0] = (xmin + xmax) / 2.
                 target[idx[0], idx[1], assign * self.num_features + 1] = (ymin + ymax) / 2.
                 target[idx[0], idx[1], assign * self.num_features + 2] = xmax - xmin

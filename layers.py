@@ -12,14 +12,13 @@ class EmptyLayer(nn.Module):
 
 
 class YOLOv2Layer(nn.Module):
-    def __init__(self, parent, anchors, softmax=False):
+    def __init__(self, parent, anchors):
         super(YOLOv2Layer, self).__init__()
         self.device = parent.device
         self.anchors = torch.tensor(anchors, device=self.device)
         self.num_anchors = len(anchors)
         self.grid_size = parent.grid_size
         self.num_features = parent.num_features
-        self.softmax = softmax
 
     def forward(self, x):
         x = x.permute(0, 3, 2, 1)
@@ -46,10 +45,6 @@ class YOLOv2Layer(nn.Module):
         x[:, 3] = anchors[:, 1] * torch.exp(x[:, 3])
         # Convert t_o --> IoU and get class probabilities.
         x[:, 4] = torch.sigmoid(x[:, 4])
-        if self.softmax:
-            x[:, 5:] = torch.softmax(x[:, 5:].contiguous(), dim=1)
-        else:
-            x[:, 5:] = torch.sigmoid(x[:, 5:])
 
         x = x.contiguous().view(*in_shape)
         x = x.permute(0, 3, 2, 1)
@@ -75,26 +70,19 @@ class Swish(nn.Module):
 
 
 class FocalLoss(nn.Module):
-    def __init__(self, alpha=1, gamma=2, logits=False, reduction=True):
+    def __init__(self, gamma=2, reduction='mean'):
         super(FocalLoss, self).__init__()
-        self.alpha = alpha
         self.gamma = gamma
-        self.logits = logits
         self.reduction = reduction
 
-    def forward(self, inputs, targets):
-        if self.logits:
-            bce_loss = F.binary_cross_entropy_with_logits(inputs, targets, reduction='none')
-        else:
-            bce_loss = F.binary_cross_entropy(inputs, targets, reduction='none')
-        pt = torch.exp(-bce_loss)
-        f_loss = self.alpha * (1 - pt)**self.gamma * bce_loss
+    def forward(self, input, target):
+        """
+        input: [N, C], float32
+        target: [N, ], int64
+        """
+        logpt = F.log_softmax(input, dim=-1)
+        pt = torch.exp(logpt)
+        logpt = (1 - pt)**self.gamma * logpt
+        loss = F.nll_loss(logpt, target, reduction=self.reduction)
 
-        if self.reduction is None:
-            return f_loss
-        elif self.reduction == 'mean':
-            return torch.mean(f_loss)
-        elif self.reduction == 'sum':
-            return torch.sum(f_loss)
-        else:
-            raise AssertionError
+        return loss

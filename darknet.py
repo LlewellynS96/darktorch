@@ -8,7 +8,11 @@ from utils import jaccard, xywh2xyxy, non_maximum_suppression, to_numpy_image, a
 from layers import *
 
 
-REDUCTION = 'mean'
+REDUCTION = 'sum'
+NOOBJ_IOU_THRESHOLD = 0.6
+LAMBDA_COORD = 5.
+LAMBDA_OBJ = 1.
+LAMBDA_NOOBJ = .5
 
 
 class YOLOv2tiny(nn.Module):
@@ -39,7 +43,7 @@ class YOLOv2tiny(nn.Module):
         self.anchors = self.collect_anchors()
         self.num_anchors = len(self.anchors)
 
-        self.focal_loss = True
+        self.focal_loss = False
 
         self.to(device)
 
@@ -56,10 +60,6 @@ class YOLOv2tiny(nn.Module):
 
         assert predictions.shape == targets.shape
 
-        lambda_coord = 1.
-        lambda_obj = 0.5
-        lambda_noobj = 2.
-
         loss = dict()
 
         targets = targets.permute(0, 2, 3, 1)
@@ -68,7 +68,10 @@ class YOLOv2tiny(nn.Module):
         targets = targets.contiguous().view(-1, self.num_features)
         predictions = predictions.contiguous().view(-1, self.num_features)
 
+        n_anch = len(predictions)
+
         obj_mask = torch.nonzero(targets[:, 4]).flatten()
+        n_obj = obj_mask.numel()
 
         if obj_mask.numel() > 0:
             predictions_xyxy = xywh2xyxy(predictions[:, :4])
@@ -77,11 +80,10 @@ class YOLOv2tiny(nn.Module):
             ious = jaccard(predictions_xyxy, targets_xyxy)
             ious, _ = torch.max(ious, dim=1)
 
-            if self.focal_loss:
-                loss['object'] = lambda_obj * FocalLoss(reduction=REDUCTION)(predictions[obj_mask, 4],
-                                                                             ious[obj_mask].detach())
-            else:
-                loss['object'] = lambda_obj * nn.MSELoss(reduction=REDUCTION)(predictions[obj_mask, 4], ious[obj_mask])
+            mask = torch.nonzero(ious > NOOBJ_IOU_THRESHOLD).squeeze()
+            targets[mask, 4] = 2.
+            noobj_mask = torch.nonzero(targets[:, 4] == 0.).squeeze()
+            n_noobj = len(targets)
 
             loss['coord'] = nn.MSELoss(reduction=REDUCTION)(predictions[obj_mask, 0], targets[obj_mask, 0])
             loss['coord'] += nn.MSELoss(reduction=REDUCTION)(predictions[obj_mask, 1], targets[obj_mask, 1])
@@ -89,29 +91,27 @@ class YOLOv2tiny(nn.Module):
                                                              torch.sqrt(targets[obj_mask, 2]))
             loss['coord'] += nn.MSELoss(reduction=REDUCTION)(torch.sqrt(predictions[obj_mask, 3]),
                                                              torch.sqrt(targets[obj_mask, 3]))
-            loss['coord'] *= lambda_coord
+            loss['coord'] *= LAMBDA_COORD / n_obj
 
-            loss['class'] = 0.
-            for cls in range(self.num_classes):
-                if self.focal_loss:
-                    loss['class'] += FocalLoss(reduction=REDUCTION)(predictions[obj_mask, 5 + cls],
-                                                                    targets[obj_mask, 5 + cls])
-                else:
-                    loss['class'] += nn.MSELoss(reduction=REDUCTION)(predictions[obj_mask, 5 + cls],
-                                                                     targets[obj_mask, 5 + cls])
-            loss['class'] /= lambda_obj * self.num_classes
+            if obj_mask.numel() > 0:
+                predictions[obj_mask, 5:] = nn.Softmax(dim=-1)(predictions[obj_mask, 5:])
+                loss['class'] = nn.MSELoss(reduction=REDUCTION)(predictions[obj_mask, 5:],
+                                                                targets[obj_mask, 5:])
+                loss['class'] *= LAMBDA_OBJ / n_obj
+            else:
+                loss['class'] = 0.
 
-            iou_threshold = 0.9
-            mask = torch.nonzero(ious > iou_threshold).squeeze()
-            targets[mask, 4] = 2.
-            noobj_mask = torch.nonzero(targets[:, 4] == 0.).squeeze()
-            loss['no_object'] = lambda_noobj * nn.MSELoss(reduction=REDUCTION)(predictions[noobj_mask, 4],
-                                                                               targets[noobj_mask, 4])
+            loss['object'] = nn.MSELoss(reduction=REDUCTION)(predictions[obj_mask, 4],
+                                                             ious[obj_mask].detach())
+            loss['object'] *= LAMBDA_OBJ / n_anch
+            loss['no_object'] = nn.MSELoss(reduction=REDUCTION)(predictions[noobj_mask, 4],
+                                                                targets[noobj_mask, 4])
+            loss['no_object'] *= LAMBDA_NOOBJ / n_anch
         else:
             loss['object'] = torch.tensor([0.], device=self.device)
             loss['coord'] = torch.tensor([0.], device=self.device)
             loss['class'] = torch.tensor([0.], device=self.device)
-            loss['no_object'] = lambda_noobj * nn.MSELoss(reduction=REDUCTION)(predictions[:, 4], targets[:, 4])
+            loss['no_object'] = LAMBDA_NOOBJ * nn.MSELoss(reduction=REDUCTION)(predictions[:, 4], targets[:, 4])
 
         loss['total'] = loss['object'] + loss['coord'] + loss['class'] + loss['no_object']
 
@@ -122,6 +122,7 @@ class YOLOv2tiny(nn.Module):
 
         self.train()
 
+        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=30, gamma=0.1)
         train_dataloader = DataLoader(dataset=train_data,
                                       batch_size=batch_size,
                                       shuffle=shuffle,
@@ -141,7 +142,7 @@ class YOLOv2tiny(nn.Module):
         for epoch in range(1, epochs + 1):
             batch_loss = []
             if multi_scale:
-                random_size = np.random.randint(10, 20) * self.downscale_factor
+                random_size = np.random.randint(12, 17) * self.downscale_factor
                 self.set_image_size(random_size, random_size, dataset=train_data)
             with tqdm(total=len(train_dataloader),
                       desc='Epoch: [{}/{}]'.format(epoch, epochs),
@@ -155,6 +156,7 @@ class YOLOv2tiny(nn.Module):
                     loss = self.loss(predictions, targets)
                     batch_loss.append(loss['total'].item())
                     loss['total'].backward()
+                    torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=.5, norm_type='inf')
                     optimizer.step()
                     inner.set_postfix_str(' Training Loss: {:.6f}'.format(np.mean(batch_loss)))
                     inner.update()
@@ -166,6 +168,7 @@ class YOLOv2tiny(nn.Module):
                                                                                                     val_loss[-1]))
                 else:
                     inner.set_postfix_str(' Training Loss: {:.6f}'.format(train_loss[-1]))
+            scheduler.step()
             # if val_data is not None:
             #     outer.set_postfix_str(' Training Loss: {:.6f},  Validation Loss: {:.6f}'.format(train_loss[-1],
             #                                                                                     val_loss[-1]))
@@ -354,6 +357,8 @@ class YOLOv2tiny(nn.Module):
                 module.add_module('maxpool_{}'.format(index), maxpool_layer)
 
             elif block['type'] == 'yolo':
+                assert False, NotImplementedError
+
                 mask = block['mask'].split(',')
                 mask = [int(x) for x in mask]
 
@@ -373,7 +378,7 @@ class YOLOv2tiny(nn.Module):
                 anchors = [(float(anchors[i]) / self.grid_size[0], float(anchors[i + 1]) / self.grid_size[1])
                            for i in range(0, len(anchors), 2)]
 
-                detection_layer = YOLOv2Layer(self, anchors, softmax=False)
+                detection_layer = YOLOv2Layer(self, anchors)
                 self.detection_layers.append(detection_layer)
                 module.add_module('detection_{}'.format(index), detection_layer)
 
@@ -551,7 +556,7 @@ class YOLOv2tiny(nn.Module):
 
         for i, prediction in enumerate(predictions):
             prediction = prediction.contiguous().view(-1, self.num_features)
-
+            prediction[:, 5:] = F.softmax(prediction[:, 5:], dim=-1)
             classes = torch.argmax(prediction[:, 5:], dim=-1)
             idx = torch.arange(0, len(prediction))
             confidence = prediction[:, 4] * prediction[idx, 5 + classes]
@@ -619,7 +624,7 @@ class YOLOv2tiny(nn.Module):
                 for images, image_info, targets in dataloader:
                     images = images.to(self.device)
                     predictions = self(images)
-                    # predictions = targets
+                    predictions = targets
                     bboxes, classes, confidences, image_idx = self.process_bboxes(predictions,
                                                                                   confidence_threshold=confidence_threshold,
                                                                                   overlap_threshold=overlap_threshold,
