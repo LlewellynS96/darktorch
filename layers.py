@@ -67,22 +67,3 @@ class Swish(nn.Module):
 
     def forward(self, x):
         return x * nn.Sigmoid()(self.beta * x)
-
-
-class FocalLoss(nn.Module):
-    def __init__(self, gamma=2, reduction='mean'):
-        super(FocalLoss, self).__init__()
-        self.gamma = gamma
-        self.reduction = reduction
-
-    def forward(self, input, target):
-        """
-        input: [N, C], float32
-        target: [N, ], int64
-        """
-        logpt = F.log_softmax(input, dim=-1)
-        pt = torch.exp(logpt)
-        logpt = (1 - pt)**self.gamma * logpt
-        loss = F.nll_loss(logpt, target, reduction=self.reduction)
-
-        return loss

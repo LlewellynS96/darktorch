@@ -7,12 +7,12 @@ from utils import NUM_WORKERS
 from utils import jaccard, xywh2xyxy, non_maximum_suppression, to_numpy_image, add_bbox_to_image, export_prediction
 from layers import *
 
-
 REDUCTION = 'sum'
 NOOBJ_IOU_THRESHOLD = 0.6
-LAMBDA_COORD = 5.
+LAMBDA_COORD = 20.
 LAMBDA_OBJ = 1.
-LAMBDA_NOOBJ = .5
+LAMBDA_CLASS = 1.
+LAMBDA_NOOBJ = 1.
 
 
 class YOLOv2tiny(nn.Module):
@@ -61,9 +61,17 @@ class YOLOv2tiny(nn.Module):
         assert predictions.shape == targets.shape
 
         loss = dict()
+        batch_size = targets.shape[0]
 
         targets = targets.permute(0, 2, 3, 1)
         predictions = predictions.permute(0, 3, 2, 1)
+
+        targets = targets.contiguous().view(batch_size, -1, self.num_features)
+        predictions = predictions.contiguous().view(batch_size, -1, self.num_features)
+
+        image_idx = torch.arange(batch_size, dtype=torch.float, device=self.device).reshape(-1, 1, 1)
+        targets[:, :, :2] += image_idx
+        predictions[:, :, :2] += image_idx
 
         targets = targets.contiguous().view(-1, self.num_features)
         predictions = predictions.contiguous().view(-1, self.num_features)
@@ -83,7 +91,6 @@ class YOLOv2tiny(nn.Module):
             mask = torch.nonzero(ious > NOOBJ_IOU_THRESHOLD).squeeze()
             targets[mask, 4] = 2.
             noobj_mask = torch.nonzero(targets[:, 4] == 0.).squeeze()
-            n_noobj = len(targets)
 
             loss['coord'] = nn.MSELoss(reduction=REDUCTION)(predictions[obj_mask, 0], targets[obj_mask, 0])
             loss['coord'] += nn.MSELoss(reduction=REDUCTION)(predictions[obj_mask, 1], targets[obj_mask, 1])
@@ -97,32 +104,39 @@ class YOLOv2tiny(nn.Module):
                 predictions[obj_mask, 5:] = nn.Softmax(dim=-1)(predictions[obj_mask, 5:])
                 loss['class'] = nn.MSELoss(reduction=REDUCTION)(predictions[obj_mask, 5:],
                                                                 targets[obj_mask, 5:])
-                loss['class'] *= LAMBDA_OBJ / n_obj
+                loss['class'] *= LAMBDA_CLASS / n_obj
             else:
                 loss['class'] = 0.
 
             loss['object'] = nn.MSELoss(reduction=REDUCTION)(predictions[obj_mask, 4],
-                                                             ious[obj_mask].detach())
-            loss['object'] *= LAMBDA_OBJ / n_anch
+                                                             torch.clamp(ious[obj_mask], min=0.1).detach())
+                                                             # ious[obj_mask])
+
+            loss['object'] *= LAMBDA_OBJ / n_obj
+
             loss['no_object'] = nn.MSELoss(reduction=REDUCTION)(predictions[noobj_mask, 4],
                                                                 targets[noobj_mask, 4])
-            loss['no_object'] *= LAMBDA_NOOBJ / n_anch
+            loss['no_object'] *= LAMBDA_NOOBJ * batch_size / n_anch
+
         else:
             loss['object'] = torch.tensor([0.], device=self.device)
             loss['coord'] = torch.tensor([0.], device=self.device)
             loss['class'] = torch.tensor([0.], device=self.device)
-            loss['no_object'] = LAMBDA_NOOBJ * nn.MSELoss(reduction=REDUCTION)(predictions[:, 4], targets[:, 4])
+            loss['no_object'] = LAMBDA_NOOBJ / n_anch * nn.MSELoss(reduction=REDUCTION)(predictions[:, 4],
+                                                                                        targets[:, 4])
 
         loss['total'] = loss['object'] + loss['coord'] + loss['class'] + loss['no_object']
 
         return loss
 
-    def fit(self, train_data, optimizer, batch_size=1, epochs=1,
+    def fit(self, train_data, optimizer, scheduler=None, batch_size=1, epochs=1,
             val_data=None, shuffle=True, multi_scale=True, checkpoint_frequency=100):
 
         self.train()
 
-        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=30, gamma=0.1)
+        if scheduler is None:
+            scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda _: optimizer.defaults['lr'])
+
         train_dataloader = DataLoader(dataset=train_data,
                                       batch_size=batch_size,
                                       shuffle=shuffle,
@@ -142,7 +156,7 @@ class YOLOv2tiny(nn.Module):
         for epoch in range(1, epochs + 1):
             batch_loss = []
             if multi_scale:
-                random_size = np.random.randint(12, 17) * self.downscale_factor
+                random_size = np.random.randint(10, 20) * self.downscale_factor
                 self.set_image_size(random_size, random_size, dataset=train_data)
             with tqdm(total=len(train_dataloader),
                       desc='Epoch: [{}/{}]'.format(epoch, epochs),
@@ -624,7 +638,7 @@ class YOLOv2tiny(nn.Module):
                 for images, image_info, targets in dataloader:
                     images = images.to(self.device)
                     predictions = self(images)
-                    predictions = targets
+                    # predictions = targets
                     bboxes, classes, confidences, image_idx = self.process_bboxes(predictions,
                                                                                   confidence_threshold=confidence_threshold,
                                                                                   overlap_threshold=overlap_threshold,

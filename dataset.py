@@ -105,6 +105,7 @@ class PascalDatasetYOLO(Dataset):
 
         """
         img = self.images[index]
+        # img = self.images[0 if index % 2 else 3]
         image = Image.open(os.path.join(self.images_dir, img + '.jpg'))
         image_info = {'id': img, 'width': image.width, 'height': image.height, 'dataset': self.dataset}
         oversize = .1
@@ -132,6 +133,7 @@ class PascalDatasetYOLO(Dataset):
                 continue
             if name not in self.classes:
                 continue
+            cell_dims = 1. / self.grid_size[0], 1. / self.grid_size[1]
             if self.do_transforms:
                 if random_flip >= 0.5:
                     tmp = xmin
@@ -145,9 +147,9 @@ class PascalDatasetYOLO(Dataset):
                 xmax = np.clip(xmax, a_min=0, a_max=1.)
                 ymin = np.clip(ymin, a_min=0, a_max=1.)
                 ymax = np.clip(ymax, a_min=0, a_max=1.)
-                if xmin == xmax or ymin == ymax:
+                # if (xmax - xmin) < 0.2 * cell_dims[1] or (ymax - ymin) < 0.2 * cell_dims[0]:
+                if (xmax - xmin) < 0.015 or (ymax - ymin) < 0.015:
                     continue
-            cell_dims = 1. / self.grid_size[0], 1. / self.grid_size[1]
             idx = int(np.floor((xmax + xmin) / 2. / cell_dims[0])), int(np.floor((ymax + ymin) / 2. / cell_dims[1]))
             if target[idx[0], idx[1], 4::self.num_features].all() == 0:
                 ground_truth = torch.tensor(np.array([[xmin, ymin, xmax, ymax]], dtype=np.float32))
