@@ -9,10 +9,10 @@ from layers import *
 
 REDUCTION = 'sum'
 NOOBJ_IOU_THRESHOLD = 0.7
-LAMBDA_COORD = 1.
-LAMBDA_OBJ = 5.
+LAMBDA_COORD = 5.
+LAMBDA_OBJ = 1.
 LAMBDA_CLASS = 1.
-LAMBDA_NOOBJ = 1.
+LAMBDA_NOOBJ = .5
 
 
 class YOLOv2tiny(nn.Module):
@@ -109,8 +109,8 @@ class YOLOv2tiny(nn.Module):
                 loss['class'] = 0.
 
             loss['object'] = nn.MSELoss(reduction=REDUCTION)(predictions[obj_mask, 4],
-                                                             # torch.clamp(ious[obj_mask], min=0.1).detach())
-                                                             ious[obj_mask].detach())
+                                                             torch.clamp(ious[obj_mask], min=0.1).detach())
+                                                             # ious[obj_mask].detach())
 
             loss['object'] *= LAMBDA_OBJ / n_obj
 
