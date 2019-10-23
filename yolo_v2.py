@@ -58,7 +58,7 @@ if __name__ == '__main__':
 
     model.load_weights('models/darknet.weights', only_imagenet=True)
     model.load_weights('models/yolov2-tiny-voc.weights')
-    # model = pickle.load(open('YOLOv2-tiny_ms_100.pkl', 'rb'))
+    model = pickle.load(open('YOLOv2-tiny_ms_100.pkl', 'rb'))
     # model = model.to(device)
     # model.device = device
     # model.detection_layers[0] = model.detection_layers[0].to(device)
@@ -101,8 +101,8 @@ if __name__ == '__main__':
         # model.save_weights('models/yolov2-tiny-voc-custom.weights')
         # pickle.dump(model, open('YOLOv2_tiny.pkl', 'wb'))
 
-    model.reset_image_size(dataset=(train_data, val_data))
-    # model.set_image_size(640, 640, dataset=(train_data, val_data, test_data))
+    # model.reset_image_size(dataset=(train_data, val_data))
+    model.set_image_size(416, 416, dataset=(train_data, val_data, test_data))
 
     torch.random.manual_seed(12345)
     np.random.seed(12345)
@@ -110,8 +110,8 @@ if __name__ == '__main__':
     if predict:
         model.predict(dataset=test_data,
                       batch_size=64,
-                      confidence_threshold=0.2,
+                      confidence_threshold=0.001,
                       overlap_threshold=0.45,
-                      show=True,
-                      export=False
+                      show=False,
+                      export=True
                       )

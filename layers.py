@@ -66,4 +66,4 @@ class Swish(nn.Module):
             self.beta.requires_grad = False
 
     def forward(self, x):
-        return x * nn.Sigmoid()(self.beta * x)
+        return x * torch.sigmoid(self.beta * x)

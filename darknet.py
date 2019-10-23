@@ -10,7 +10,7 @@ from layers import *
 REDUCTION = 'sum'
 NOOBJ_IOU_THRESHOLD = 0.7
 LAMBDA_COORD = 5.
-LAMBDA_OBJ = 1.
+LAMBDA_OBJ = 5.
 LAMBDA_CLASS = 1.
 LAMBDA_NOOBJ = .5
 
@@ -109,8 +109,8 @@ class YOLOv2tiny(nn.Module):
                 loss['class'] = 0.
 
             loss['object'] = nn.MSELoss(reduction=REDUCTION)(predictions[obj_mask, 4],
-                                                             torch.clamp(ious[obj_mask], min=0.1).detach())
-                                                             # ious[obj_mask].detach())
+                                                             # torch.clamp(ious[obj_mask], min=0.1).detach())
+                                                             ious[obj_mask].detach())
 
             loss['object'] *= LAMBDA_OBJ / n_obj
 
@@ -133,9 +133,6 @@ class YOLOv2tiny(nn.Module):
             val_data=None, shuffle=True, multi_scale=True, checkpoint_frequency=100):
 
         self.train()
-
-        if scheduler is None:
-            scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda _: optimizer.defaults['lr'])
 
         train_dataloader = DataLoader(dataset=train_data,
                                       batch_size=batch_size,
@@ -182,7 +179,8 @@ class YOLOv2tiny(nn.Module):
                                                                                                     val_loss[-1]))
                 else:
                     inner.set_postfix_str(' Training Loss: {:.6f}'.format(train_loss[-1]))
-            scheduler.step()
+            if scheduler is not None:
+                scheduler.step()
             # if val_data is not None:
             #     outer.set_postfix_str(' Training Loss: {:.6f},  Validation Loss: {:.6f}'.format(train_loss[-1],
             #                                                                                     val_loss[-1]))

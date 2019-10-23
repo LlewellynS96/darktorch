@@ -205,7 +205,7 @@ if __name__ == '__main__':
            'pottedplant', 'sheep', 'sofa', 'train', 'tvmonitor']
     mean_ap = []
     for cl in cls:
-        rec, prec, ap = voc_eval(detpath='./YOLOv2-tiny_ms_det_test_{}.txt',
+        rec, prec, ap = voc_eval(detpath='./YOLOv2-tiny_det_test_{}.txt',
                                  annopath='../../data/VOC2007/Annotations/{}.xml',
                                  imagesetfile='../../data/VOC2007/ImageSets/Main/test.txt',
                                  classname=cl,

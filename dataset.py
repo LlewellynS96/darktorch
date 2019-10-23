@@ -155,6 +155,8 @@ class PascalDatasetYOLO(Dataset):
                 ground_truth = torch.tensor(np.array([[xmin, ymin, xmax, ymax]], dtype=np.float32))
                 anchors = torch.zeros((self.num_anchors, 4))
                 anchors[:, 2:] = self.anchors.clone()
+                anchors[:, 2] /= self.grid_size[0]
+                anchors[:, 3] /= self.grid_size[1]
                 anchors[:, 0::2] += xmin
                 anchors[:, 1::2] += ymin
                 ious = jaccard(ground_truth, anchors)
