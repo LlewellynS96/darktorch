@@ -8,9 +8,9 @@ from utils import jaccard, xywh2xyxy, non_maximum_suppression, to_numpy_image, a
 from layers import *
 
 REDUCTION = 'sum'
-NOOBJ_IOU_THRESHOLD = 0.6
-LAMBDA_COORD = 20.
-LAMBDA_OBJ = 1.
+NOOBJ_IOU_THRESHOLD = 0.7
+LAMBDA_COORD = 1.
+LAMBDA_OBJ = 5.
 LAMBDA_CLASS = 1.
 LAMBDA_NOOBJ = 1.
 
@@ -109,8 +109,8 @@ class YOLOv2tiny(nn.Module):
                 loss['class'] = 0.
 
             loss['object'] = nn.MSELoss(reduction=REDUCTION)(predictions[obj_mask, 4],
-                                                             torch.clamp(ious[obj_mask], min=0.1).detach())
-                                                             # ious[obj_mask])
+                                                             # torch.clamp(ious[obj_mask], min=0.1).detach())
+                                                             ious[obj_mask].detach())
 
             loss['object'] *= LAMBDA_OBJ / n_obj
 
@@ -389,7 +389,7 @@ class YOLOv2tiny(nn.Module):
 
             elif block['type'] == 'region':
                 anchors = block['anchors'].split(',')
-                anchors = [(float(anchors[i]) / self.grid_size[0], float(anchors[i + 1]) / self.grid_size[1])
+                anchors = [(float(anchors[i]), float(anchors[i + 1]))
                            for i in range(0, len(anchors), 2)]
 
                 detection_layer = YOLOv2Layer(self, anchors)

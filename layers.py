@@ -41,8 +41,8 @@ class YOLOv2Layer(nn.Module):
         # Convert t_w and t_h --> w and h.
         anchors = self.anchors.repeat(in_shape[0] * self.grid_size[0] * self.grid_size[1], 1)
 
-        x[:, 2] = anchors[:, 0] * torch.exp(x[:, 2])
-        x[:, 3] = anchors[:, 1] * torch.exp(x[:, 3])
+        x[:, 2] = anchors[:, 0] / self.grid_size[0] * torch.exp(x[:, 2])
+        x[:, 3] = anchors[:, 1] / self.grid_size[1] * torch.exp(x[:, 3])
         # Convert t_o --> IoU and get class probabilities.
         x[:, 4] = torch.sigmoid(x[:, 4])
 
