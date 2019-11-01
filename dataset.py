@@ -6,6 +6,7 @@ from PIL import Image
 import torchvision.transforms
 from utils import jaccard, read_classes, get_annotations
 
+IOU_MATCH_THRESHOLD = 0.1
 
 class PascalDatasetYOLO(Dataset):
     """
@@ -147,8 +148,7 @@ class PascalDatasetYOLO(Dataset):
                 xmax = np.clip(xmax, a_min=0, a_max=1.)
                 ymin = np.clip(ymin, a_min=0, a_max=1.)
                 ymax = np.clip(ymax, a_min=0, a_max=1.)
-                # if (xmax - xmin) < 0.2 * cell_dims[1] or (ymax - ymin) < 0.2 * cell_dims[0]:
-                if (xmax - xmin) < 0.015 or (ymax - ymin) < 0.015:
+                if xmax == xmin or ymax == ymin:
                     continue
             idx = int(np.floor((xmax + xmin) / 2. / cell_dims[0])), int(np.floor((ymax + ymin) / 2. / cell_dims[1]))
             if target[idx[0], idx[1], 4::self.num_features].all() == 0:
@@ -160,6 +160,8 @@ class PascalDatasetYOLO(Dataset):
                 anchors[:, 0::2] += xmin
                 anchors[:, 1::2] += ymin
                 ious = jaccard(ground_truth, anchors)
+                if ious.max() < IOU_MATCH_THRESHOLD:
+                    continue
                 assign = np.argmax(ious)
                 target[idx[0], idx[1], assign * self.num_features + 0] = (xmin + xmax) / 2.
                 target[idx[0], idx[1], assign * self.num_features + 1] = (ymin + ymax) / 2.
@@ -167,6 +169,8 @@ class PascalDatasetYOLO(Dataset):
                 target[idx[0], idx[1], assign * self.num_features + 3] = ymax - ymin
                 target[idx[0], idx[1], assign * self.num_features + 4] = 1.
                 target[idx[0], idx[1], assign * self.num_features + 5:(assign + 1) * self.num_features] = self.encode_categorical(name)
+            else:
+                print('One cell, two objects.')
 
         image = torchvision.transforms.ToTensor()(image)
 

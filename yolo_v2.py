@@ -58,7 +58,7 @@ if __name__ == '__main__':
 
     model.load_weights('models/darknet.weights', only_imagenet=True)
     model.load_weights('models/yolov2-tiny-voc.weights')
-    model = pickle.load(open('YOLOv2-tiny_ms_100.pkl', 'rb'))
+    model = pickle.load(open('YOLOv2-tiny_100.pkl', 'rb'))
     # model = model.to(device)
     # model.device = device
     # model.detection_layers[0] = model.detection_layers[0].to(device)
@@ -72,13 +72,13 @@ if __name__ == '__main__':
         torch.random.manual_seed(12345)
         np.random.seed(12345)
 
-        optimizer = optim.SGD(model.get_trainable_parameters(), lr=1e-1, momentum=0.9, weight_decay=5e-4, nesterov=True)
+        optimizer = optim.SGD(model.get_trainable_parameters(), lr=1e-2, momentum=0.9, weight_decay=5e-4, nesterov=True)
 
         target_lr = optimizer.defaults['lr']
-        initial_lr = 1e-2
-        warm_up = 1
-        step_size = 0.5
-        step_frequency = 20
+        initial_lr = 1e-4
+        warm_up = 5
+        step_size = 0.98
+        step_frequency = 1
         gradient = (target_lr - initial_lr) / warm_up
 
         def f(e):
@@ -93,16 +93,16 @@ if __name__ == '__main__':
                   val_data=val_data,
                   optimizer=optimizer,
                   scheduler=scheduler,
-                  batch_size=40,
-                  epochs=3,
-                  multi_scale=False,
+                  batch_size=32,
+                  epochs=100,
+                  multi_scale=True,
                   checkpoint_frequency=20)
 
         # model.save_weights('models/yolov2-tiny-voc-custom.weights')
         # pickle.dump(model, open('YOLOv2_tiny.pkl', 'wb'))
 
-    # model.reset_image_size(dataset=(train_data, val_data))
-    model.set_image_size(416, 416, dataset=(train_data, val_data, test_data))
+    model.reset_image_size(dataset=(train_data, val_data))
+    # model.set_image_size(608, 608, dataset=(train_data, val_data, test_data))
 
     torch.random.manual_seed(12345)
     np.random.seed(12345)
@@ -110,8 +110,8 @@ if __name__ == '__main__':
     if predict:
         model.predict(dataset=test_data,
                       batch_size=64,
-                      confidence_threshold=0.001,
+                      confidence_threshold=0.2,
                       overlap_threshold=0.45,
-                      show=False,
-                      export=True
+                      show=True,
+                      export=False
                       )

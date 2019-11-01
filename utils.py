@@ -379,9 +379,7 @@ def get_annotations(annotations_dir, img):
     return annotations
 
 
-def find_best_anchors(classes, k=5, max_iter=20, root_dir='data/VOC2012/', dataset='train', skip_truncated=True):
-
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+def find_best_anchors(classes, k=5, max_iter=20, root_dir='data/VOC2012/', dataset='train', skip_truncated=True, device='cuda'):
 
     sets_dir = os.path.join(root_dir, 'ImageSets', 'Main')
     annotations_dir = os.path.join(root_dir, 'Annotations')
@@ -407,10 +405,11 @@ def find_best_anchors(classes, k=5, max_iter=20, root_dir='data/VOC2012/', datas
                 continue
             width = xmax - xmin
             height = ymax - ymin
-            bboxes.append([0., 0., width, height])
+            for i in range(10, 20):
+                bboxes.append([0., 0., i * width, i * height])
 
     bboxes = torch.tensor(bboxes, device=device)
-    anchors = torch.tensor(([0., 0., 1., 1.] * np.random.random((k, 4))).astype(dtype=np.float32), device=device)
+    anchors = torch.tensor(([0., 0., 10., 10.] * np.random.random((k, 4))).astype(dtype=np.float32), device=device)
 
     for _ in range(max_iter):
         ious = jaccard(bboxes, anchors)
@@ -422,13 +421,17 @@ def find_best_anchors(classes, k=5, max_iter=20, root_dir='data/VOC2012/', datas
 
 
 def main():
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    device = 'cpu'
+
     classes = read_classes('../data/VOC2012/voc.names')
-    print(13. * find_best_anchors(classes,
-                                 k=5,
-                                 max_iter=1000,
-                                 root_dir='../data/VOC2012/',
-                                 dataset='trainval',
-                                 skip_truncated=False))
+    print(find_best_anchors(classes,
+                            k=10,
+                            max_iter=1000,
+                            root_dir='../data/VOC2012/',
+                            dataset='trainval',
+                            skip_truncated=False,
+                            device=device))
 
 
 if __name__ == '__main__':

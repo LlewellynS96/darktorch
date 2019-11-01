@@ -8,11 +8,13 @@ from utils import jaccard, xywh2xyxy, non_maximum_suppression, to_numpy_image, a
 from layers import *
 
 REDUCTION = 'sum'
-NOOBJ_IOU_THRESHOLD = 0.7
-LAMBDA_COORD = 5.
+NOOBJ_IOU_THRESHOLD = 0.6
+LAMBDA_COORD = 100.
 LAMBDA_OBJ = 5.
-LAMBDA_CLASS = 1.
-LAMBDA_NOOBJ = .5
+LAMBDA_CLASS = 5.
+LAMBDA_NOOBJ = 1.
+
+MULTI_SCALE_FREQ = 10.
 
 
 class YOLOv2tiny(nn.Module):
@@ -98,25 +100,24 @@ class YOLOv2tiny(nn.Module):
                                                              torch.sqrt(targets[obj_mask, 2]))
             loss['coord'] += nn.MSELoss(reduction=REDUCTION)(torch.sqrt(predictions[obj_mask, 3]),
                                                              torch.sqrt(targets[obj_mask, 3]))
-            loss['coord'] *= LAMBDA_COORD / n_obj
+            loss['coord'] *= LAMBDA_COORD / batch_size
 
             if obj_mask.numel() > 0:
                 predictions[obj_mask, 5:] = nn.Softmax(dim=-1)(predictions[obj_mask, 5:])
                 loss['class'] = nn.MSELoss(reduction=REDUCTION)(predictions[obj_mask, 5:],
                                                                 targets[obj_mask, 5:])
-                loss['class'] *= LAMBDA_CLASS / n_obj
+                loss['class'] *= LAMBDA_CLASS / batch_size
             else:
                 loss['class'] = 0.
 
             loss['object'] = nn.MSELoss(reduction=REDUCTION)(predictions[obj_mask, 4],
-                                                             # torch.clamp(ious[obj_mask], min=0.1).detach())
                                                              ious[obj_mask].detach())
 
-            loss['object'] *= LAMBDA_OBJ / n_obj
+            loss['object'] *= LAMBDA_OBJ / batch_size
 
             loss['no_object'] = nn.MSELoss(reduction=REDUCTION)(predictions[noobj_mask, 4],
                                                                 targets[noobj_mask, 4])
-            loss['no_object'] *= LAMBDA_NOOBJ * batch_size / n_anch
+            loss['no_object'] *= LAMBDA_NOOBJ / batch_size
 
         else:
             loss['object'] = torch.tensor([0.], device=self.device)
@@ -152,9 +153,6 @@ class YOLOv2tiny(nn.Module):
         #           unit='batches') as outer:
         for epoch in range(1, epochs + 1):
             batch_loss = []
-            if multi_scale:
-                random_size = np.random.randint(10, 20) * self.downscale_factor
-                self.set_image_size(random_size, random_size, dataset=train_data)
             with tqdm(total=len(train_dataloader),
                       desc='Epoch: [{}/{}]'.format(epoch, epochs),
                       leave=True,
@@ -167,16 +165,23 @@ class YOLOv2tiny(nn.Module):
                     loss = self.loss(predictions, targets)
                     batch_loss.append(loss['total'].item())
                     loss['total'].backward()
-                    torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=.5, norm_type='inf')
+                    torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=5., norm_type='inf')
                     optimizer.step()
                     inner.set_postfix_str(' Training Loss: {:.6f}'.format(np.mean(batch_loss)))
                     inner.update()
+                    if inner.n % MULTI_SCALE_FREQ == 0 and multi_scale:
+                        random_size = np.random.randint(10, 20) * self.downscale_factor
+                        self.set_image_size(random_size, random_size, dataset=train_data)
                 train_loss.append(np.mean(batch_loss))
                 if val_data is not None:
-                    self.reset_image_size()
+                    self.reset_image_size(dataset=[train_data, val_data])
                     val_loss.append(self.calculate_loss(val_data, 2 * batch_size))
                     inner.set_postfix_str(' Training Loss: {:.6f},  Validation Loss: {:.6f}'.format(train_loss[-1],
                                                                                                     val_loss[-1]))
+                    with open('training_loss.txt', 'a') as fl:
+                        fl.writelines('Epoch: {}, Train loss: {:.6f}, Val loss: {:.6f}\n'.format(epoch,
+                                                                                                 train_loss[-1],
+                                                                                                 val_loss[-1]))
                 else:
                     inner.set_postfix_str(' Training Loss: {:.6f}'.format(train_loss[-1]))
             if scheduler is not None:
