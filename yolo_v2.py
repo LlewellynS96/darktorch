@@ -13,7 +13,7 @@ if __name__ == '__main__':
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-    train = True
+    train = False
     freeze = False
     predict = True
 
@@ -23,8 +23,8 @@ if __name__ == '__main__':
 
     torchsummary.summary(model, (model.channels, *model.default_image_size), device=device)
 
-    train_data = PascalDatasetYOLO(root_dir='../data/VOC2012/',
-                                   classes='../data/VOC2012/voc.names',
+    train_data = PascalDatasetYOLO(root_dir='../../../Data/VOC/2012/',
+                                   class_file='../../../Data/VOC/2012/voc.names',
                                    dataset='train',
                                    skip_truncated=False,
                                    skip_difficult=False,
@@ -34,8 +34,8 @@ if __name__ == '__main__':
                                    do_transforms=True
                                    )
 
-    val_data = PascalDatasetYOLO(root_dir='../data/VOC2012/',
-                                 classes='../data/VOC2012/voc.names',
+    val_data = PascalDatasetYOLO(root_dir='../../../Data/VOC/2012/',
+                                 class_file='../../../Data/VOC/2012/voc.names',
                                  dataset='val',
                                  skip_truncated=False,
                                  skip_difficult=True,
@@ -45,22 +45,22 @@ if __name__ == '__main__':
                                  do_transforms=False
                                  )
 
-    test_data = PascalDatasetYOLO(root_dir='../data/VOC2007/',
-                                  classes='../data/VOC2012/voc.names',
-                                  dataset='test',
+    test_data = PascalDatasetYOLO(root_dir='../../../Data/VOC/2012/',
+                                  class_file='../../../Data/VOC/2012/voc.names',
+                                  dataset='val',
                                   skip_truncated=False,
-                                  skip_difficult=False,
+                                  skip_difficult=True,
                                   image_size=model.default_image_size,
                                   grid_size=model.grid_size,
                                   anchors=model.anchors,
                                   do_transforms=False
                                   )
 
-    model.load_weights('models/darknet.weights', only_imagenet=True)
+    # model.load_weights('models/darknet.weights', only_imagenet=True)
     model.load_weights('models/yolov2-tiny-voc.weights')
-    model = pickle.load(open('YOLOv2-tiny_100.pkl', 'rb'))
+    # model = pickle.load(open('YOLOv2-tiny_100.pkl', 'rb'))
     # model = model.to(device)
-    # model.device = device
+    model.device = device
     # model.detection_layers[0] = model.detection_layers[0].to(device)
     # model.detection_layers[0].device = device
     # model.detection_layers[0].anchors = model.detection_layers[0].anchors.to(device)
@@ -110,8 +110,8 @@ if __name__ == '__main__':
     if predict:
         model.predict(dataset=test_data,
                       batch_size=64,
-                      confidence_threshold=0.2,
+                      confidence_threshold=0.01,
                       overlap_threshold=0.45,
-                      show=True,
-                      export=False
+                      show=False,
+                      export=True
                       )

@@ -2,11 +2,12 @@ import os
 import torch
 import numpy as np
 from torch.utils.data import Dataset
-from PIL import Image
+from PIL import Image, ImageOps
 import torchvision.transforms
-from utils import jaccard, read_classes, get_annotations
+from utils import jaccard, read_classes, get_annotations, get_letterbox_padding
 
 IOU_MATCH_THRESHOLD = 0.1
+
 
 class PascalDatasetYOLO(Dataset):
     """
@@ -14,7 +15,8 @@ class PascalDatasetYOLO(Dataset):
     from a PASCAL VOC dataset in a format that is compatible for training
     the YOLOv2 object detector.
     """
-    def __init__(self, anchors, classes, root_dir='data/VOC2012/', dataset='train', skip_truncated=True,
+
+    def __init__(self, anchors, class_file, root_dir='data/VOC2012/', dataset='train', skip_truncated=True,
                  do_transforms=False, skip_difficult=True, image_size=(416, 416), grid_size=(13, 13)):
         """
         Initialise the dataset object with some network and dataset specific parameters.
@@ -23,7 +25,7 @@ class PascalDatasetYOLO(Dataset):
         ----------
         anchors : Tensor
                 A Tensor object of N anchors given by (x1, y1, x2, y2).
-        classes : str
+        class_file : str
                 The path to a text file containing the names of the different classes that
                 should be loaded.
         root_dir : str, optional
@@ -46,17 +48,14 @@ class PascalDatasetYOLO(Dataset):
                 A tuple (x, y) describing how many horizontal and vertical grids comprise
                 the YOLO model that will load images from this dataset.
         """
-        self.classes = read_classes(classes)
+        assert image_size[0] == image_size[1], 'This implementation has only been validated for square images.'
+        assert grid_size[0] == grid_size[1], 'This implementation has only been validated for square images.'
 
-        assert set(self.classes).issubset({'aeroplane', 'bicycle', 'bird', 'boat', 'bottle', 'bus', 'car', 'cat',
-                                           'chair', 'cow', 'diningtable', 'dog', 'horse', 'motorbike', 'person',
-                                           'pottedplant', 'sheep', 'sofa', 'train', 'tvmonitor'})
+        self.classes = read_classes(class_file)
 
         assert dataset in ['train', 'val', 'trainval', 'test']
 
-        self.anchors = anchors.clone().detach().cpu()
         self.num_classes = len(self.classes)
-        self.num_anchors = len(self.anchors)
         self.num_features = 5 + self.num_classes
 
         self.root_dir = root_dir
@@ -70,6 +69,8 @@ class PascalDatasetYOLO(Dataset):
         self.skip_difficult = skip_difficult
         self.image_size = image_size
         self.grid_size = grid_size
+        self.anchors = anchors.clone().detach().cpu()
+        self.num_anchors = len(self.anchors)
 
         self.do_transforms = do_transforms
 
@@ -106,69 +107,85 @@ class PascalDatasetYOLO(Dataset):
 
         """
         img = self.images[index]
-        # img = self.images[0 if index % 2 else 3]
         image = Image.open(os.path.join(self.images_dir, img + '.jpg'))
         image_info = {'id': img, 'width': image.width, 'height': image.height, 'dataset': self.dataset}
-        oversize = .1
         random_flip = np.random.random()
-        crop_offset = (np.random.random(size=2) * oversize * self.image_size).astype(dtype=np.int)
         if self.do_transforms:
             image = torchvision.transforms.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.25, hue=0.05)(image)
-            image_resize = np.array(self.image_size * np.array((1. + oversize)), dtype=np.int)
+            oversize = 0.2
+            image_resize = np.array([image_info['width'], image_info['height']] * np.array((1. + oversize)),
+                                    dtype=np.int)
+            crop_offset = np.random.random(size=2) * oversize * [image_info['width'], image_info['height']]
+            crop_offset = crop_offset.astype(dtype=np.int)
             image = image.resize(image_resize)
             if random_flip >= 0.5:
                 image = torchvision.transforms.functional.hflip(image)
             image = torchvision.transforms.functional.crop(image,
-                                               *crop_offset[::-1],
-                                               *self.image_size[::-1])
-        else:
-            image = image.resize(self.image_size)
+                                                           *crop_offset,
+                                                           image_info['height'], image_info['width'])
+        ratio, pad = get_letterbox_padding(image.size, self.image_size)
+        image = image.resize([int(dim * ratio) for dim in image.size])
+        image = ImageOps.expand(image, pad, fill="black")
+        image_info['padding'] = pad
+
+        assert image.size == self.image_size
 
         annotations = get_annotations(self.annotations_dir, img)
-        target = np.zeros((self.grid_size[0], self.grid_size[1], self.num_anchors * self.num_features),
+        target = np.zeros((self.grid_size[1], self.grid_size[0], self.num_anchors * self.num_features),
                           dtype=np.float32)
         # For each object in image.
         for annotation in annotations:
-            name, xmin, ymin, xmax, ymax, _, _ = annotation
-            if (self.skip_truncated and annotation[5]) or (self.skip_difficult and annotation[6]):
+            name, height, width, xmin, ymin, xmax, ymax, truncated, difficult = annotation
+            if (self.skip_truncated and truncated) or (self.skip_difficult and difficult):
                 continue
             if name not in self.classes:
                 continue
-            cell_dims = 1. / self.grid_size[0], 1. / self.grid_size[1]
+            cell_dims = self.image_size[1] / self.grid_size[1], self.image_size[0] / self.grid_size[0]
             if self.do_transforms:
                 if random_flip >= 0.5:
                     tmp = xmin
-                    xmin = 1. - xmax
-                    xmax = 1. - tmp
-                xmin = (xmin * image_resize[0] - crop_offset[0]) / self.image_size[0]
-                xmax = (xmax * image_resize[0] - crop_offset[0]) / self.image_size[0]
-                ymin = (ymin * image_resize[1] - crop_offset[1]) / self.image_size[1]
-                ymax = (ymax * image_resize[1] - crop_offset[1]) / self.image_size[1]
-                xmin = np.clip(xmin, a_min=0, a_max=1.)
-                xmax = np.clip(xmax, a_min=0, a_max=1.)
-                ymin = np.clip(ymin, a_min=0, a_max=1.)
-                ymax = np.clip(ymax, a_min=0, a_max=1.)
+                    xmin = width - xmax
+                    xmax = width - tmp
+                xmin = (xmin * image_resize[0] - crop_offset[0]) / image_info['width'] * self.image_size[0] + pad[0]
+                xmax = (xmax * image_resize[0] - crop_offset[0]) / image_info['width'] * self.image_size[0] + pad[0]
+                ymin = (ymin * image_resize[1] - crop_offset[1]) / image_info['height'] * self.image_size[1] + pad[1]
+                ymax = (ymax * image_resize[1] - crop_offset[1]) / image_info['height'] * self.image_size[1] + pad[1]
+                xmin = np.clip(xmin, a_min=pad[0], a_max=self.image_size[0] - pad[2])
+                xmax = np.clip(xmax, a_min=pad[0], a_max=self.image_size[0] - pad[2])
+                ymin = np.clip(ymin, a_min=pad[1], a_max=self.image_size[1] - pad[3])
+                ymax = np.clip(ymax, a_min=pad[1], a_max=self.image_size[1] - pad[3])
                 if xmax == xmin or ymax == ymin:
                     continue
+            else:
+                xmin = xmin * ratio + pad[0]
+                xmax = xmax * ratio + pad[0]
+                ymin = ymin * ratio + pad[1]
+                ymax = ymax * ratio + pad[1]
+                xmin = np.clip(xmin, a_min=pad[0], a_max=self.image_size[0] - pad[2])
+                xmax = np.clip(xmax, a_min=pad[0], a_max=self.image_size[0] - pad[2])
+                ymin = np.clip(ymin, a_min=pad[1], a_max=self.image_size[1] - pad[3])
+                ymax = np.clip(ymax, a_min=pad[1], a_max=self.image_size[1] - pad[3])
+                if xmax == xmin or ymax == ymin:
+                    continue
+            xmin, xmax, ymin, ymax = int(xmin), int(xmax), int(ymin), int(ymax)
             idx = int(np.floor((xmax + xmin) / 2. / cell_dims[0])), int(np.floor((ymax + ymin) / 2. / cell_dims[1]))
-            if target[idx[0], idx[1], 4::self.num_features].all() == 0:
-                ground_truth = torch.tensor(np.array([[xmin, ymin, xmax, ymax]], dtype=np.float32))
+            if target[idx[1], idx[0], 4::self.num_features].all() == 0:
+                ground_truth = torch.tensor([[xmin, ymin, xmax, ymax]], dtype=torch.float32)
                 anchors = torch.zeros((self.num_anchors, 4))
                 anchors[:, 2:] = self.anchors.clone()
-                anchors[:, 2] /= self.grid_size[0]
-                anchors[:, 3] /= self.grid_size[1]
                 anchors[:, 0::2] += xmin
                 anchors[:, 1::2] += ymin
                 ious = jaccard(ground_truth, anchors)
                 if ious.max() < IOU_MATCH_THRESHOLD:
                     continue
                 assign = np.argmax(ious)
-                target[idx[0], idx[1], assign * self.num_features + 0] = (xmin + xmax) / 2.
-                target[idx[0], idx[1], assign * self.num_features + 1] = (ymin + ymax) / 2.
-                target[idx[0], idx[1], assign * self.num_features + 2] = xmax - xmin
-                target[idx[0], idx[1], assign * self.num_features + 3] = ymax - ymin
-                target[idx[0], idx[1], assign * self.num_features + 4] = 1.
-                target[idx[0], idx[1], assign * self.num_features + 5:(assign + 1) * self.num_features] = self.encode_categorical(name)
+                target[idx[1], idx[0], assign * self.num_features + 0] = (xmin + xmax) / 2.
+                target[idx[1], idx[0], assign * self.num_features + 1] = (ymin + ymax) / 2.
+                target[idx[1], idx[0], assign * self.num_features + 2] = xmax - xmin
+                target[idx[1], idx[0], assign * self.num_features + 3] = ymax - ymin
+                target[idx[1], idx[0], assign * self.num_features + 4] = 1.
+                target[idx[1], idx[0], assign * self.num_features + 5:(assign + 1) * self.num_features] = \
+                    self.encode_categorical(name)
             else:
                 print('One cell, two objects.')
 
@@ -194,3 +211,6 @@ class PascalDatasetYOLO(Dataset):
 
     def set_grid_size(self, x, y):
         self.grid_size = x, y
+
+    def set_anchors(self, anchors):
+        self.anchors = anchors.clone().detach().cpu()

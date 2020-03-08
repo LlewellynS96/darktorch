@@ -42,7 +42,7 @@ class YOLOv2tiny(nn.Module):
 
         self.build_modules()
 
-        self.anchors = self.collect_anchors()
+        self.anchors = self.calculate_anchors()
         self.num_anchors = len(self.anchors)
 
         self.focal_loss = False
@@ -55,6 +55,11 @@ class YOLOv2tiny(nn.Module):
 
         for layer in self.layers:
             x = layer(x)
+
+        x[:, 0::self.num_features, :, :] *= self.image_size[0]
+        x[:, 1::self.num_features, :, :] *= self.image_size[1]
+        x[:, 2::self.num_features, :, :] *= self.image_size[0]
+        x[:, 3::self.num_features, :, :] *= self.image_size[1]
 
         return x
 
@@ -547,22 +552,32 @@ class YOLOv2tiny(nn.Module):
         assert isinstance(y, int)
 
         grid_size = int(x / self.downscale_factor), int(y / self.downscale_factor)
+
         self.image_size = x, y
         self.set_grid_size(*grid_size)
+        self.anchors = self.calculate_anchors()
+
         if dataset is not None:
             if isinstance(dataset, (list, tuple)):
                 for d in dataset:
                     d.set_image_size(x, y)
                     d.set_grid_size(*grid_size)
+                    d.set_anchors(self.anchors)
             else:
                 dataset.set_image_size(x, y)
                 dataset.set_grid_size(*grid_size)
+                dataset.set_anchors(self.anchors)
 
     def reset_image_size(self, dataset=None):
 
         self.set_image_size(*self.default_image_size, dataset=dataset)
 
-    def process_bboxes(self, predictions, confidence_threshold=0.01, overlap_threshold=0.5, nms=True):
+    def calculate_anchors(self):
+        return self.collect_anchors() / \
+               torch.tensor(self.grid_size, device=self.device) * \
+               torch.tensor(self.image_size, device=self.device)
+
+    def process_bboxes(self, predictions, image_info, confidence_threshold=0.01, overlap_threshold=0.5, nms=True):
 
         predictions = predictions.permute(0, 2, 3, 1)
 
@@ -589,6 +604,13 @@ class YOLOv2tiny(nn.Module):
             confidence = confidence[mask]
             classes = classes[mask]
 
+            bboxes[:, ::2] = torch.clamp(bboxes[:, ::2],
+                                      min=image_info['padding'][0][i],
+                                      max=self.image_size[0] - image_info['padding'][2][i])
+            bboxes[:, 1::2] = torch.clamp(bboxes[:, 1::2],
+                                       min=image_info['padding'][1][i],
+                                       max=self.image_size[1] - image_info['padding'][3][i])
+
             if nms:
                 cls = torch.unique(classes)
                 for c in cls:
@@ -609,9 +631,6 @@ class YOLOv2tiny(nn.Module):
             classes = torch.cat(classes_).flatten()
             confidence = torch.cat(confidence_).flatten()
             image_idx = torch.cat(image_idx_).flatten()
-
-            bboxes = torch.clamp(bboxes, min=0, max=1)
-            bboxes = torch.clamp(bboxes, min=0, max=1)
 
             return bboxes, classes, confidence, image_idx
         else:
@@ -643,13 +662,16 @@ class YOLOv2tiny(nn.Module):
                     predictions = self(images)
                     # predictions = targets
                     bboxes, classes, confidences, image_idx = self.process_bboxes(predictions,
-                                                                                  confidence_threshold=confidence_threshold,
-                                                                                  overlap_threshold=overlap_threshold,
+                                                                                  image_info,
+                                                                                  confidence_threshold,
+                                                                                  overlap_threshold,
                                                                                   nms=True)
                     if show:
                         for idx, image in enumerate(images):
                             width = image_info['width'][idx]
                             height = image_info['height'][idx]
+                            width = self.image_size[0]
+                            height = self.image_size[1]
                             image = to_numpy_image(image, size=(width, height))
                             mask = image_idx == idx
                             for bbox, cls, confidence in zip(bboxes[mask], classes[mask], confidences[mask]):
@@ -667,13 +689,14 @@ class YOLOv2tiny(nn.Module):
                                 ids = image_info['id'][idx]
                                 set_name = image_info['dataset'][idx]
                                 confidence = confidence.item()
+                                ratio = min([float(d) / max([width, height]) for d in self.image_size])
+                                bbox[::2] -= image_info['padding'][0]
+                                bbox[1::2] -= image_info['padding'][1]
+                                bbox[::2] /= ratio
+                                bbox[::2] /= ratio
                                 x1, y1, x2, y2 = bbox.detach().cpu().numpy()
-                                width = image_info['width'][idx].item()
-                                height = image_info['height'][idx].item()
-                                x1 *= width
-                                x2 *= width
-                                y1 *= height
-                                y2 *= height
+                                width = image_info['width']
+                                height = image_info['height']
                                 export_prediction(cls=name,
                                                   prefix=self.name,
                                                   image_id=ids,

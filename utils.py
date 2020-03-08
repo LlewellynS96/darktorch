@@ -184,7 +184,7 @@ def xyxy2xywh(xyxy):
     return xywh
 
 
-def read_classes(file):
+def read_classes(file) -> list:
     """
     Utility function that parses a text file containing all the classes
     that are present in a specific dataset.
@@ -255,12 +255,9 @@ def add_bbox_to_image(image, bbox, confidence, cls):
     # text = '{}'.format(cls)
     height, width = image.shape[:2]
     xmin, ymin, xmax, ymax = bbox
-    xmin *= width
-    xmax *= width
-    ymin *= height
-    ymax *= height
     # Draw a bounding box.
     color = np.random.uniform(0., 255., size=3)
+    print('({}, {}), ({}, {})'.format(xmin, ymin, xmax, ymax))
     cv2.rectangle(image, (xmin, ymax), (xmax, ymin), color, 3)
 
     # Display the label at the top of the bounding box
@@ -370,11 +367,11 @@ def get_annotations(annotations_dir, img):
         # Get ground truth bounding boxes.
         # NOTE: The creators of the Pascal VOC dataset started counting at 1,
         # and thus the indices have to be corrected.
-        xmin = (float(bbox.find('xmin').text) - 1.) / width
-        xmax = (float(bbox.find('xmax').text) - 1.) / width
-        ymin = (float(bbox.find('ymin').text) - 1.) / height
-        ymax = (float(bbox.find('ymax').text) - 1.) / height
-        annotations.append((name, xmin, ymin, xmax, ymax, truncated, difficult))
+        xmin = (float(bbox.find('xmin').text) - 1.)
+        xmax = (float(bbox.find('xmax').text) - 1.)
+        ymin = (float(bbox.find('ymin').text) - 1.)
+        ymax = (float(bbox.find('ymax').text) - 1.)
+        annotations.append((name, height, width, xmin, ymin, xmax, ymax, truncated, difficult))
 
     return annotations
 
@@ -400,7 +397,7 @@ def find_best_anchors(classes, k=5, max_iter=20, root_dir='data/VOC2012/', datas
     for image in images:
         annotations = get_annotations(annotations_dir, image)
         for annotation in annotations:
-            _, xmin, ymin, xmax, ymax, truncated, _ = annotation
+            _, width, height, xmin, ymin, xmax, ymax, truncated, _ = annotation
             if skip_truncated and truncated:
                 continue
             width = xmax - xmin
@@ -418,6 +415,16 @@ def find_best_anchors(classes, k=5, max_iter=20, root_dir='data/VOC2012/', datas
             anchors[i] = torch.mean(bboxes[idx == i], dim=0)
 
     return anchors[:, 2:]
+
+
+def get_letterbox_padding(old_size, desired_size):
+    ratio = min([float(d) / max(old_size) for d in desired_size])
+    new_size = np.array([dim * ratio for dim in old_size], dtype=np.int)
+
+    delta = desired_size - new_size
+    padding = (delta[0] // 2, delta[1] // 2, delta[0] - (delta[0] // 2), delta[1] - (delta[1] // 2))
+
+    return ratio, padding
 
 
 def main():
