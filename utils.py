@@ -253,7 +253,6 @@ def add_bbox_to_image(image, bbox, confidence, cls):
     """
     text = '{} {:.2f}'.format(cls, confidence)
     # text = '{}'.format(cls)
-    height, width = image.shape[:2]
     xmin, ymin, xmax, ymax = bbox
     # Draw a bounding box.
     color = np.random.uniform(0., 255., size=3)
@@ -364,13 +363,11 @@ def get_annotations(annotations_dir, img):
         name = obj.find('name').text
         truncated = int(obj.find('truncated').text)
         difficult = int(obj.find('difficult').text)
-        # Get ground truth bounding boxes.
-        # NOTE: The creators of the Pascal VOC dataset started counting at 1,
-        # and thus the indices have to be corrected.
-        xmin = (float(bbox.find('xmin').text) - 1.)
-        xmax = (float(bbox.find('xmax').text) - 1.)
-        ymin = (float(bbox.find('ymin').text) - 1.)
-        ymax = (float(bbox.find('ymax').text) - 1.)
+
+        xmin = (float(bbox.find('xmin').text))
+        xmax = (float(bbox.find('xmax').text))
+        ymin = (float(bbox.find('ymin').text))
+        ymax = (float(bbox.find('ymax').text))
         annotations.append((name, height, width, xmin, ymin, xmax, ymax, truncated, difficult))
 
     return annotations

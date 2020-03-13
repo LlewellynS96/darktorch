@@ -16,8 +16,8 @@ class PascalDatasetYOLO(Dataset):
     the YOLOv2 object detector.
     """
 
-    def __init__(self, anchors, class_file, root_dir='data/VOC2012/', dataset='train', skip_truncated=True,
-                 do_transforms=False, skip_difficult=True, image_size=(416, 416), grid_size=(13, 13)):
+    def __init__(self, anchors, class_file, root_dir, dataset='train', skip_truncated=True, do_transforms=False,
+                 skip_difficult=True, image_size=(416, 416), grid_size=(13, 13)):
         """
         Initialise the dataset object with some network and dataset specific parameters.
 
@@ -125,7 +125,7 @@ class PascalDatasetYOLO(Dataset):
                                                            image_info['height'], image_info['width'])
         ratio, pad = get_letterbox_padding(image.size, self.image_size)
         image = image.resize([int(dim * ratio) for dim in image.size])
-        image = ImageOps.expand(image, pad, fill="black")
+        image = ImageOps.expand(image, pad, fill="white")
         image_info['padding'] = pad
 
         assert image.size == self.image_size
@@ -150,10 +150,10 @@ class PascalDatasetYOLO(Dataset):
                 xmax = (xmax * image_resize[0] - crop_offset[0]) / image_info['width'] * self.image_size[0] + pad[0]
                 ymin = (ymin * image_resize[1] - crop_offset[1]) / image_info['height'] * self.image_size[1] + pad[1]
                 ymax = (ymax * image_resize[1] - crop_offset[1]) / image_info['height'] * self.image_size[1] + pad[1]
-                xmin = np.clip(xmin, a_min=pad[0], a_max=self.image_size[0] - pad[2])
-                xmax = np.clip(xmax, a_min=pad[0], a_max=self.image_size[0] - pad[2])
-                ymin = np.clip(ymin, a_min=pad[1], a_max=self.image_size[1] - pad[3])
-                ymax = np.clip(ymax, a_min=pad[1], a_max=self.image_size[1] - pad[3])
+                xmin = np.clip(xmin, a_min=pad[0]+1, a_max=self.image_size[0] - pad[2])
+                xmax = np.clip(xmax, a_min=pad[0]+1, a_max=self.image_size[0] - pad[2])
+                ymin = np.clip(ymin, a_min=pad[1]+1, a_max=self.image_size[1] - pad[3])
+                ymax = np.clip(ymax, a_min=pad[1]+1, a_max=self.image_size[1] - pad[3])
                 if xmax == xmin or ymax == ymin:
                     continue
             else:
@@ -161,15 +161,15 @@ class PascalDatasetYOLO(Dataset):
                 xmax = xmax * ratio + pad[0]
                 ymin = ymin * ratio + pad[1]
                 ymax = ymax * ratio + pad[1]
-                xmin = np.clip(xmin, a_min=pad[0], a_max=self.image_size[0] - pad[2])
-                xmax = np.clip(xmax, a_min=pad[0], a_max=self.image_size[0] - pad[2])
-                ymin = np.clip(ymin, a_min=pad[1], a_max=self.image_size[1] - pad[3])
-                ymax = np.clip(ymax, a_min=pad[1], a_max=self.image_size[1] - pad[3])
+                xmin = np.clip(xmin, a_min=pad[0]+1, a_max=self.image_size[0] - pad[2])
+                xmax = np.clip(xmax, a_min=pad[0]+1, a_max=self.image_size[0] - pad[2])
+                ymin = np.clip(ymin, a_min=pad[1]+1, a_max=self.image_size[1] - pad[3])
+                ymax = np.clip(ymax, a_min=pad[1]+1, a_max=self.image_size[1] - pad[3])
                 if xmax == xmin or ymax == ymin:
                     continue
-            xmin, xmax, ymin, ymax = int(xmin), int(xmax), int(ymin), int(ymax)
+            xmin, xmax, ymin, ymax = np.round(xmin), np.round(xmax), np.round(ymin), np.round(ymax)
             idx = int(np.floor((xmax + xmin) / 2. / cell_dims[0])), int(np.floor((ymax + ymin) / 2. / cell_dims[1]))
-            if target[idx[1], idx[0], 4::self.num_features].all() == 0:
+            if (target[idx[1], idx[0], 4::self.num_features] == 0).all():
                 ground_truth = torch.tensor([[xmin, ymin, xmax, ymax]], dtype=torch.float32)
                 anchors = torch.zeros((self.num_anchors, 4))
                 anchors[:, 2:] = self.anchors.clone()
@@ -187,7 +187,7 @@ class PascalDatasetYOLO(Dataset):
                 target[idx[1], idx[0], assign * self.num_features + 5:(assign + 1) * self.num_features] = \
                     self.encode_categorical(name)
             else:
-                print('One cell, two objects.')
+                continue
 
         image = torchvision.transforms.ToTensor()(image)
 

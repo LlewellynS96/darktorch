@@ -12,6 +12,7 @@ if __name__ == '__main__':
     np.random.seed(12345)
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    # device = 'cpu'
 
     train = False
     freeze = False
@@ -45,11 +46,11 @@ if __name__ == '__main__':
                                  do_transforms=False
                                  )
 
-    test_data = PascalDatasetYOLO(root_dir='../../../Data/VOC/2012/',
+    test_data = PascalDatasetYOLO(root_dir='../../../Data/VOC/2007/',
                                   class_file='../../../Data/VOC/2012/voc.names',
-                                  dataset='val',
+                                  dataset='test',
                                   skip_truncated=False,
-                                  skip_difficult=True,
+                                  skip_difficult=False,
                                   image_size=model.default_image_size,
                                   grid_size=model.grid_size,
                                   anchors=model.anchors,
@@ -110,7 +111,7 @@ if __name__ == '__main__':
     if predict:
         model.predict(dataset=test_data,
                       batch_size=64,
-                      confidence_threshold=0.01,
+                      confidence_threshold=0.1,
                       overlap_threshold=0.45,
                       show=False,
                       export=True

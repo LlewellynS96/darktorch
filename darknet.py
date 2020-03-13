@@ -323,14 +323,14 @@ class YOLOv2tiny(nn.Module):
 
                 if batch_normalize:
                     bn_layer = nn.BatchNorm2d(filters)
-                    module.add_module('batch_norm_{0}'.format(index), bn_layer)
+                    module.add_module('batch_norm_{}'.format(index), bn_layer)
 
                 if activation == 'leaky':
                     activation_layer = nn.LeakyReLU(negative_slope=0.1, inplace=True)
-                    module.add_module('leaky_{0}'.format(index), activation_layer)
+                    module.add_module('leaky_{}'.format(index), activation_layer)
                 elif activation == 'swish':
                     activation_layer = Swish(beta=1., learnable=True)
-                    module.add_module('swish_{0}'.format(index), activation_layer)
+                    module.add_module('swish_{}'.format(index), activation_layer)
                 elif activation == 'linear':
                     pass
                 else:
@@ -551,7 +551,7 @@ class YOLOv2tiny(nn.Module):
         assert isinstance(x, int)
         assert isinstance(y, int)
 
-        grid_size = int(x / self.downscale_factor), int(y / self.downscale_factor)
+        grid_size = self.calculate_grid_size()
 
         self.image_size = x, y
         self.set_grid_size(*grid_size)
@@ -605,11 +605,11 @@ class YOLOv2tiny(nn.Module):
             classes = classes[mask]
 
             bboxes[:, ::2] = torch.clamp(bboxes[:, ::2],
-                                      min=image_info['padding'][0][i],
-                                      max=self.image_size[0] - image_info['padding'][2][i])
+                                         min=image_info['padding'][0][i]+1,
+                                         max=self.image_size[0] - image_info['padding'][2][i])
             bboxes[:, 1::2] = torch.clamp(bboxes[:, 1::2],
-                                       min=image_info['padding'][1][i],
-                                       max=self.image_size[1] - image_info['padding'][3][i])
+                                          min=image_info['padding'][1][i]+1,
+                                          max=self.image_size[1] - image_info['padding'][3][i])
 
             if nms:
                 cls = torch.unique(classes)
@@ -659,8 +659,8 @@ class YOLOv2tiny(nn.Module):
                       leave=True) as pbar:
                 for images, image_info, targets in dataloader:
                     images = images.to(self.device)
-                    predictions = self(images)
-                    # predictions = targets
+                    # predictions = self(images)
+                    predictions = targets
                     bboxes, classes, confidences, image_idx = self.process_bboxes(predictions,
                                                                                   image_info,
                                                                                   confidence_threshold,
@@ -668,8 +668,6 @@ class YOLOv2tiny(nn.Module):
                                                                                   nms=True)
                     if show:
                         for idx, image in enumerate(images):
-                            width = image_info['width'][idx]
-                            height = image_info['height'][idx]
                             width = self.image_size[0]
                             height = self.image_size[1]
                             image = to_numpy_image(image, size=(width, height))
@@ -677,6 +675,7 @@ class YOLOv2tiny(nn.Module):
                             for bbox, cls, confidence in zip(bboxes[mask], classes[mask], confidences[mask]):
                                 name = dataset.classes[cls]
                                 add_bbox_to_image(image, bbox, confidence, name)
+                                print(bbox)
                             plt.imshow(image)
                             # plt.axis('off')
                             plt.show()
@@ -688,15 +687,15 @@ class YOLOv2tiny(nn.Module):
                                 name = dataset.classes[cls]
                                 ids = image_info['id'][idx]
                                 set_name = image_info['dataset'][idx]
+                                width = image_info['width'][idx]
+                                height = image_info['height'][idx]
                                 confidence = confidence.item()
-                                ratio = min([float(d) / max([width, height]) for d in self.image_size])
-                                bbox[::2] -= image_info['padding'][0]
-                                bbox[1::2] -= image_info['padding'][1]
+                                ratio = min([d / float(max([width, height])) for d in self.image_size])
+                                bbox[::2] -= image_info['padding'][0][idx]
+                                bbox[1::2] -= image_info['padding'][1][idx]
                                 bbox[::2] /= ratio
-                                bbox[::2] /= ratio
+                                bbox[1::2] /= ratio
                                 x1, y1, x2, y2 = bbox.detach().cpu().numpy()
-                                width = image_info['width']
-                                height = image_info['height']
                                 export_prediction(cls=name,
                                                   prefix=self.name,
                                                   image_id=ids,
