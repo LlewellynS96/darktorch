@@ -111,7 +111,7 @@ if __name__ == '__main__':
     if predict:
         model.predict(dataset=test_data,
                       batch_size=64,
-                      confidence_threshold=0.1,
+                      confidence_threshold=0.005,
                       overlap_threshold=0.45,
                       show=False,
                       export=True

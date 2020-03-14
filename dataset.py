@@ -125,7 +125,7 @@ class PascalDatasetYOLO(Dataset):
                                                            image_info['height'], image_info['width'])
         ratio, pad = get_letterbox_padding(image.size, self.image_size)
         image = image.resize([int(dim * ratio) for dim in image.size])
-        image = ImageOps.expand(image, pad, fill="white")
+        image = ImageOps.expand(image, pad, fill=(128, 128, 128))
         image_info['padding'] = pad
 
         assert image.size == self.image_size

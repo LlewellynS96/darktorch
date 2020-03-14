@@ -86,7 +86,6 @@ class YOLOv2tiny(nn.Module):
         n_anch = len(predictions)
 
         obj_mask = torch.nonzero(targets[:, 4]).flatten()
-        n_obj = obj_mask.numel()
 
         if obj_mask.numel() > 0:
             predictions_xyxy = xywh2xyxy(predictions[:, :4])
@@ -659,8 +658,8 @@ class YOLOv2tiny(nn.Module):
                       leave=True) as pbar:
                 for images, image_info, targets in dataloader:
                     images = images.to(self.device)
-                    # predictions = self(images)
-                    predictions = targets
+                    predictions = self(images)
+                    # predictions = targets
                     bboxes, classes, confidences, image_idx = self.process_bboxes(predictions,
                                                                                   image_info,
                                                                                   confidence_threshold,
@@ -675,7 +674,6 @@ class YOLOv2tiny(nn.Module):
                             for bbox, cls, confidence in zip(bboxes[mask], classes[mask], confidences[mask]):
                                 name = dataset.classes[cls]
                                 add_bbox_to_image(image, bbox, confidence, name)
-                                print(bbox)
                             plt.imshow(image)
                             # plt.axis('off')
                             plt.show()

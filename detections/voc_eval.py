@@ -205,13 +205,14 @@ if __name__ == '__main__':
            'pottedplant', 'sheep', 'sofa', 'train', 'tvmonitor']
     mean_ap = []
     for cl in cls:
-        rec, prec, ap = voc_eval(detpath='./YOLOv2-tiny_det_test_{}.txt',
+        rec, prec, ap = voc_eval(#detpath='./comp4_det_test_{}.txt',
+                                 detpath='./YOLOv2-tiny_det_test_{}.txt',
                                  annopath='../../../../Data/VOC/2007/Annotations/{}.xml',
                                  imagesetfile='../../../../Data/VOC/2007/ImageSets/Main/test.txt',
                                  classname=cl,
                                  cachedir='.',
                                  ovthresh=0.5,
-                                 use_07_metric=False)
+                                 use_07_metric=True)
         mean_ap.append(ap)
         print(ap)
         # plt.plot(rec, prec)
