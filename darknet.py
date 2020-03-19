@@ -9,12 +9,13 @@ from layers import *
 
 REDUCTION = 'sum'
 NOOBJ_IOU_THRESHOLD = 0.6
-LAMBDA_COORD = 100.
-LAMBDA_OBJ = 5.
-LAMBDA_CLASS = 5.
+LAMBDA_COORD = 5.
+LAMBDA_OBJ = 1.
+LAMBDA_CLASS = 1.
 LAMBDA_NOOBJ = 1.
 
 MULTI_SCALE_FREQ = 10.
+USE_CROSS_ENTROPY = False
 
 
 class YOLOv2tiny(nn.Module):
@@ -42,10 +43,8 @@ class YOLOv2tiny(nn.Module):
 
         self.build_modules()
 
-        self.anchors = self.calculate_anchors()
+        self.anchors = self.collect_anchors()
         self.num_anchors = len(self.anchors)
-
-        self.focal_loss = False
 
         self.to(device)
 
@@ -55,11 +54,6 @@ class YOLOv2tiny(nn.Module):
 
         for layer in self.layers:
             x = layer(x)
-
-        x[:, 0::self.num_features, :, :] *= self.image_size[0]
-        x[:, 1::self.num_features, :, :] *= self.image_size[1]
-        x[:, 2::self.num_features, :, :] *= self.image_size[0]
-        x[:, 3::self.num_features, :, :] *= self.image_size[1]
 
         return x
 
@@ -71,7 +65,7 @@ class YOLOv2tiny(nn.Module):
         batch_size = targets.shape[0]
 
         targets = targets.permute(0, 2, 3, 1)
-        predictions = predictions.permute(0, 3, 2, 1)
+        predictions = predictions.permute(0, 2, 3, 1)
 
         targets = targets.contiguous().view(batch_size, -1, self.num_features)
         predictions = predictions.contiguous().view(batch_size, -1, self.num_features)
@@ -83,12 +77,10 @@ class YOLOv2tiny(nn.Module):
         targets = targets.contiguous().view(-1, self.num_features)
         predictions = predictions.contiguous().view(-1, self.num_features)
 
-        n_anch = len(predictions)
-
         obj_mask = torch.nonzero(targets[:, 4]).flatten()
 
         if obj_mask.numel() > 0:
-            predictions_xyxy = xywh2xyxy(predictions[:, :4])
+            predictions_xyxy = xywh2xyxy(predictions[:, :4].detach())
             targets_xyxy = xywh2xyxy(targets[obj_mask, :4])
 
             ious = jaccard(predictions_xyxy, targets_xyxy)
@@ -107,15 +99,19 @@ class YOLOv2tiny(nn.Module):
             loss['coord'] *= LAMBDA_COORD / batch_size
 
             if obj_mask.numel() > 0:
-                predictions[obj_mask, 5:] = nn.Softmax(dim=-1)(predictions[obj_mask, 5:])
-                loss['class'] = nn.MSELoss(reduction=REDUCTION)(predictions[obj_mask, 5:],
-                                                                targets[obj_mask, 5:])
+                if USE_CROSS_ENTROPY:
+                    targets_long = torch.argmax(targets[obj_mask, 5:], axis=1)
+                    loss['class'] = nn.CrossEntropyLoss(reduction=REDUCTION)(predictions[obj_mask, 5:], targets_long)
+                else:
+                    predictions[obj_mask, 5:] = nn.Softmax(dim=-1)(predictions[obj_mask, 5:])
+                    loss['class'] = nn.MSELoss(reduction=REDUCTION)(predictions[obj_mask, 5:],
+                                                                    targets[obj_mask, 5:])
                 loss['class'] *= LAMBDA_CLASS / batch_size
             else:
                 loss['class'] = 0.
 
             loss['object'] = nn.MSELoss(reduction=REDUCTION)(predictions[obj_mask, 4],
-                                                             ious[obj_mask].detach())
+                                                             ious[obj_mask])
 
             loss['object'] *= LAMBDA_OBJ / batch_size
 
@@ -127,8 +123,8 @@ class YOLOv2tiny(nn.Module):
             loss['object'] = torch.tensor([0.], device=self.device)
             loss['coord'] = torch.tensor([0.], device=self.device)
             loss['class'] = torch.tensor([0.], device=self.device)
-            loss['no_object'] = LAMBDA_NOOBJ / n_anch * nn.MSELoss(reduction=REDUCTION)(predictions[:, 4],
-                                                                                        targets[:, 4])
+            loss['no_object'] = LAMBDA_NOOBJ / batch_size * nn.MSELoss(reduction=REDUCTION)(predictions[:, 4],
+                                                                                            targets[:, 4])
 
         loss['total'] = loss['object'] + loss['coord'] + loss['class'] + loss['no_object']
 
@@ -174,7 +170,7 @@ class YOLOv2tiny(nn.Module):
                     inner.set_postfix_str(' Training Loss: {:.6f}'.format(np.mean(batch_loss)))
                     inner.update()
                     if inner.n % MULTI_SCALE_FREQ == 0 and multi_scale:
-                        random_size = np.random.randint(10, 20) * self.downscale_factor
+                        random_size = (2 * np.random.randint(4, 10) + 1) * self.downscale_factor  # preferably randint(4,10)
                         self.set_image_size(random_size, random_size, dataset=train_data)
                 train_loss.append(np.mean(batch_loss))
                 if val_data is not None:
@@ -550,31 +546,22 @@ class YOLOv2tiny(nn.Module):
         assert isinstance(x, int)
         assert isinstance(y, int)
 
-        grid_size = self.calculate_grid_size()
-
         self.image_size = x, y
+        grid_size = self.calculate_grid_size()
         self.set_grid_size(*grid_size)
-        self.anchors = self.calculate_anchors()
 
         if dataset is not None:
             if isinstance(dataset, (list, tuple)):
                 for d in dataset:
                     d.set_image_size(x, y)
                     d.set_grid_size(*grid_size)
-                    d.set_anchors(self.anchors)
             else:
                 dataset.set_image_size(x, y)
                 dataset.set_grid_size(*grid_size)
-                dataset.set_anchors(self.anchors)
 
     def reset_image_size(self, dataset=None):
 
         self.set_image_size(*self.default_image_size, dataset=dataset)
-
-    def calculate_anchors(self):
-        return self.collect_anchors() / \
-               torch.tensor(self.grid_size, device=self.device) * \
-               torch.tensor(self.image_size, device=self.device)
 
     def process_bboxes(self, predictions, image_info, confidence_threshold=0.01, overlap_threshold=0.5, nms=True):
 
@@ -598,6 +585,9 @@ class YOLOv2tiny(nn.Module):
                 continue
 
             bboxes = prediction[mask, :4].clone()
+            cell_dims = self.image_size[1] / self.grid_size[1], self.image_size[0] / self.grid_size[0]
+            bboxes[:, ::2] *= cell_dims[0]
+            bboxes[:, 1::2] *= cell_dims[1]
             bboxes = xywh2xyxy(bboxes)
 
             confidence = confidence[mask]
@@ -685,14 +675,11 @@ class YOLOv2tiny(nn.Module):
                                 name = dataset.classes[cls]
                                 ids = image_info['id'][idx]
                                 set_name = image_info['dataset'][idx]
-                                width = image_info['width'][idx]
-                                height = image_info['height'][idx]
                                 confidence = confidence.item()
-                                ratio = min([d / float(max([width, height])) for d in self.image_size])
                                 bbox[::2] -= image_info['padding'][0][idx]
                                 bbox[1::2] -= image_info['padding'][1][idx]
-                                bbox[::2] /= ratio
-                                bbox[1::2] /= ratio
+                                bbox[::2] /= image_info['ratio'][0][idx]
+                                bbox[1::2] /= image_info['ratio'][1][idx]
                                 x1, y1, x2, y2 = bbox.detach().cpu().numpy()
                                 export_prediction(cls=name,
                                                   prefix=self.name,

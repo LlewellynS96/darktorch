@@ -35,14 +35,12 @@ class YOLOv2Layer(nn.Module):
         v_offsets = v_offsets.repeat(in_shape[0])
         x[:, 0] += h_offsets.float()
         x[:, 1] += v_offsets.float()
-        x[:, 0] /= self.grid_size[0]
-        x[:, 1] /= self.grid_size[1]
 
         # Convert t_w and t_h --> w and h.
         anchors = self.anchors.repeat(in_shape[0] * self.grid_size[0] * self.grid_size[1], 1)
 
-        x[:, 2] = anchors[:, 0] / self.grid_size[0] * torch.exp(x[:, 2])
-        x[:, 3] = anchors[:, 1] / self.grid_size[1] * torch.exp(x[:, 3])
+        x[:, 2] = anchors[:, 0] * torch.exp(x[:, 2])
+        x[:, 3] = anchors[:, 1] * torch.exp(x[:, 3])
 
         # Convert t_o --> IoU and get clacd.../ss probabilities.
         x[:, 4] = torch.sigmoid(x[:, 4])
@@ -68,3 +66,22 @@ class Swish(nn.Module):
 
     def forward(self, x):
         return x * torch.sigmoid(self.beta * x)
+
+
+class FocalLoss(nn.Module):
+    def __init__(self, gamma=2, reduction='mean'):
+        super(FocalLoss, self).__init__()
+        self.gamma = gamma
+        self.reduction = reduction
+
+    def forward(self, x, target):
+        """
+        input: [N, C], float32
+        target: [N, ], int64
+        """
+        logpt = F.log_softmax(x, dim=-1)
+        pt = torch.exp(logpt)
+        logpt = (1 - pt)**self.gamma * logpt
+        loss = F.nll_loss(logpt, target, reduction=self.reduction)
+
+        return loss

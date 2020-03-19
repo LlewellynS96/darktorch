@@ -5,6 +5,7 @@ from torch import optim
 from dataset import PascalDatasetYOLO
 from layers import *
 from darknet import YOLOv2tiny
+from utils import exponential_decay_scheduler, step_decay_scheduler
 
 
 if __name__ == '__main__':
@@ -24,9 +25,11 @@ if __name__ == '__main__':
 
     torchsummary.summary(model, (model.channels, *model.default_image_size), device=device)
 
-    train_data = PascalDatasetYOLO(root_dir='../../../Data/VOC/2012/',
+    train_data = PascalDatasetYOLO(root_dir=['../../../Data/VOC/2007/', '../../../Data/VOC/2012/'],
+                                   #  root_dir=['../../../Data/VOC/2012/'],
                                    class_file='../../../Data/VOC/2012/voc.names',
-                                   dataset='train',
+                                   dataset=['trainval', 'trainval'],
+                                   #  dataset=['val'],
                                    skip_truncated=False,
                                    skip_difficult=False,
                                    image_size=model.image_size,
@@ -57,14 +60,11 @@ if __name__ == '__main__':
                                   do_transforms=False
                                   )
 
-    # model.load_weights('models/darknet.weights', only_imagenet=True)
-    model.load_weights('models/yolov2-tiny-voc.weights')
-    # model = pickle.load(open('YOLOv2-tiny_100.pkl', 'rb'))
+    model.load_weights('models/darknet.weights', only_imagenet=True)
+    # model.load_weights('models/yolov2-tiny-voc.weights')
+    model = pickle.load(open('YOLOv2-tiny_50.pkl', 'rb'))
     # model = model.to(device)
-    model.device = device
-    # model.detection_layers[0] = model.detection_layers[0].to(device)
-    # model.detection_layers[0].device = device
-    # model.detection_layers[0].anchors = model.detection_layers[0].anchors.to(device)
+    # model.device = device
 
     if freeze:
         model.freeze(freeze_last_layer=False)
@@ -75,29 +75,16 @@ if __name__ == '__main__':
 
         optimizer = optim.SGD(model.get_trainable_parameters(), lr=1e-2, momentum=0.9, weight_decay=5e-4, nesterov=True)
 
-        target_lr = optimizer.defaults['lr']
-        initial_lr = 1e-4
-        warm_up = 5
-        step_size = 0.98
-        step_frequency = 1
-        gradient = (target_lr - initial_lr) / warm_up
-
-        def f(e):
-            if e < warm_up:
-                return gradient * e + initial_lr
-            else:
-                return target_lr * step_size ** ((e - warm_up) // step_frequency)
-        scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=f)
-        # scheduler = None
+        scheduler = step_decay_scheduler(optimizer, warm_up=5, steps=30, decay=0.1)
 
         model.fit(train_data=train_data,
                   val_data=val_data,
                   optimizer=optimizer,
                   scheduler=scheduler,
-                  batch_size=32,
-                  epochs=100,
+                  batch_size=32,  # preferably 64
+                  epochs=50,
                   multi_scale=True,
-                  checkpoint_frequency=20)
+                  checkpoint_frequency=25)
 
         # model.save_weights('models/yolov2-tiny-voc-custom.weights')
         # pickle.dump(model, open('YOLOv2_tiny.pkl', 'wb'))
@@ -111,7 +98,7 @@ if __name__ == '__main__':
     if predict:
         model.predict(dataset=test_data,
                       batch_size=64,
-                      confidence_threshold=0.005,
+                      confidence_threshold=0.01,
                       overlap_threshold=0.45,
                       show=False,
                       export=True

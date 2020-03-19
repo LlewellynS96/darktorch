@@ -6,6 +6,8 @@ from PIL import Image, ImageOps
 import torchvision.transforms
 from utils import jaccard, read_classes, get_annotations, get_letterbox_padding
 
+
+USE_LETTERBOX = True
 IOU_MATCH_THRESHOLD = 0.1
 
 
@@ -16,7 +18,7 @@ class PascalDatasetYOLO(Dataset):
     the YOLOv2 object detector.
     """
 
-    def __init__(self, anchors, class_file, root_dir, dataset='train', skip_truncated=True, do_transforms=False,
+    def __init__(self, anchors, class_file, root_dir, dataset=['train'], skip_truncated=True, do_transforms=False,
                  skip_difficult=True, image_size=(416, 416), grid_size=(13, 13)):
         """
         Initialise the dataset object with some network and dataset specific parameters.
@@ -28,9 +30,9 @@ class PascalDatasetYOLO(Dataset):
         class_file : str
                 The path to a text file containing the names of the different classes that
                 should be loaded.
-        root_dir : str, optional
+        root_dir : str or list
                 The root directory where the PASCAL VOC images and annotations are stored.
-        dataset : {'train', 'val', 'trainval', 'test}, optional
+        dataset : list, optional
                 The specific subset of the PASCAL VOC challenge which should be loaded.
         skip_truncated : bool,  optional
                 A boolean value to specify whether bounding boxes should be skipped or
@@ -53,15 +55,20 @@ class PascalDatasetYOLO(Dataset):
 
         self.classes = read_classes(class_file)
 
-        assert dataset in ['train', 'val', 'trainval', 'test']
-
         self.num_classes = len(self.classes)
         self.num_features = 5 + self.num_classes
 
+        if isinstance(root_dir, str):
+            root_dir = [root_dir]
+        if isinstance(dataset, str):
+            dataset = [dataset]
+
+        assert len(root_dir) == len(dataset)
+
         self.root_dir = root_dir
-        self.images_dir = os.path.join(self.root_dir, 'JPEGImages/')
-        self.annotations_dir = os.path.join(self.root_dir, 'Annotations')
-        self.sets_dir = os.path.join(self.root_dir, 'ImageSets', 'Main')
+        self.images_dir = [os.path.join(r, 'JPEGImages/') for r in self.root_dir]
+        self.annotations_dir = [os.path.join(r, 'Annotations') for r in self.root_dir]
+        self.sets_dir = [os.path.join(r, 'ImageSets', 'Main') for r in self.root_dir]
         self.dataset = dataset
 
         self.images = []
@@ -74,13 +81,14 @@ class PascalDatasetYOLO(Dataset):
 
         self.do_transforms = do_transforms
 
-        for cls in self.classes:
-            file = os.path.join(self.sets_dir, '{}_{}.txt'.format(cls, dataset))
-            with open(file) as f:
-                for line in f:
-                    image_desc = line.split()
-                    if image_desc[1] == '1':
-                        self.images.append(image_desc[0])
+        for d in range(len(dataset)):
+            for cls in self.classes:
+                file = os.path.join(self.sets_dir[d], '{}_{}.txt'.format(cls, dataset[d]))
+                with open(file) as f:
+                    for line in f:
+                        image_desc = line.split()
+                        if image_desc[1] == '1':
+                            self.images.append((d, image_desc[0]))
 
         self.images = list(set(self.images))  # Remove duplicates.
         self.images.sort()
@@ -106,12 +114,14 @@ class PascalDatasetYOLO(Dataset):
             used to initialise the dataset object.
 
         """
-        img = self.images[index]
-        image = Image.open(os.path.join(self.images_dir, img + '.jpg'))
-        image_info = {'id': img, 'width': image.width, 'height': image.height, 'dataset': self.dataset}
+        dataset, img = self.images[index]
+        # dataset, img = self.images[0] if index % 2 else self.images[1]
+        image = Image.open(os.path.join(self.images_dir[dataset], img + '.jpg'))
+        image_info = {'id': img, 'width': image.width, 'height': image.height, 'dataset': self.dataset[dataset]}
         random_flip = np.random.random()
         if self.do_transforms:
-            image = torchvision.transforms.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.25, hue=0.05)(image)
+            image = torchvision.transforms.RandomGrayscale(p=0.1)(image)
+            image = torchvision.transforms.ColorJitter(brightness=0.5, contrast=0.5, saturation=0.5, hue=0.1)(image)
             oversize = 0.2
             image_resize = np.array([image_info['width'], image_info['height']] * np.array((1. + oversize)),
                                     dtype=np.int)
@@ -121,16 +131,24 @@ class PascalDatasetYOLO(Dataset):
             if random_flip >= 0.5:
                 image = torchvision.transforms.functional.hflip(image)
             image = torchvision.transforms.functional.crop(image,
-                                                           *crop_offset,
+                                                           *crop_offset[::-1],
                                                            image_info['height'], image_info['width'])
-        ratio, pad = get_letterbox_padding(image.size, self.image_size)
-        image = image.resize([int(dim * ratio) for dim in image.size])
-        image = ImageOps.expand(image, pad, fill=(128, 128, 128))
-        image_info['padding'] = pad
+        if USE_LETTERBOX:
+            ratio, pad = get_letterbox_padding(image.size, self.image_size)
+            image = image.resize([int(dim * r) for dim, r in zip(image.size, ratio)])
+            image = ImageOps.expand(image, pad, fill=(128, 128, 128))
+            image_info['padding'] = pad
+            image_info['ratio'] = ratio
+        else:
+            pad = [0., 0., 0., 0.]
+            ratio = [dim2 / float(dim1) for dim1, dim2 in zip(image.size, self.image_size)]
+            image = image.resize(self.image_size)
+            image_info['padding'] = pad
+            image_info['ratio'] = ratio
 
         assert image.size == self.image_size
 
-        annotations = get_annotations(self.annotations_dir, img)
+        annotations = get_annotations(self.annotations_dir[dataset], img)
         target = np.zeros((self.grid_size[1], self.grid_size[0], self.num_anchors * self.num_features),
                           dtype=np.float32)
         # For each object in image.
@@ -146,29 +164,27 @@ class PascalDatasetYOLO(Dataset):
                     tmp = xmin
                     xmin = width - xmax
                     xmax = width - tmp
-                xmin = (xmin * image_resize[0] - crop_offset[0]) / image_info['width'] * self.image_size[0] + pad[0]
-                xmax = (xmax * image_resize[0] - crop_offset[0]) / image_info['width'] * self.image_size[0] + pad[0]
-                ymin = (ymin * image_resize[1] - crop_offset[1]) / image_info['height'] * self.image_size[1] + pad[1]
-                ymax = (ymax * image_resize[1] - crop_offset[1]) / image_info['height'] * self.image_size[1] + pad[1]
-                xmin = np.clip(xmin, a_min=pad[0]+1, a_max=self.image_size[0] - pad[2])
-                xmax = np.clip(xmax, a_min=pad[0]+1, a_max=self.image_size[0] - pad[2])
-                ymin = np.clip(ymin, a_min=pad[1]+1, a_max=self.image_size[1] - pad[3])
-                ymax = np.clip(ymax, a_min=pad[1]+1, a_max=self.image_size[1] - pad[3])
-                if xmax == xmin or ymax == ymin:
-                    continue
+                xmin = (xmin * (1. + oversize) - crop_offset[0]) * ratio[0] + pad[0]
+                xmax = (xmax * (1. + oversize) - crop_offset[0]) * ratio[0] + pad[0]
+                ymin = (ymin * (1. + oversize) - crop_offset[1]) * ratio[1] + pad[1]
+                ymax = (ymax * (1. + oversize) - crop_offset[1]) * ratio[1] + pad[1]
             else:
-                xmin = xmin * ratio + pad[0]
-                xmax = xmax * ratio + pad[0]
-                ymin = ymin * ratio + pad[1]
-                ymax = ymax * ratio + pad[1]
-                xmin = np.clip(xmin, a_min=pad[0]+1, a_max=self.image_size[0] - pad[2])
-                xmax = np.clip(xmax, a_min=pad[0]+1, a_max=self.image_size[0] - pad[2])
-                ymin = np.clip(ymin, a_min=pad[1]+1, a_max=self.image_size[1] - pad[3])
-                ymax = np.clip(ymax, a_min=pad[1]+1, a_max=self.image_size[1] - pad[3])
-                if xmax == xmin or ymax == ymin:
-                    continue
+                xmin = xmin * ratio[0] + pad[0]
+                xmax = xmax * ratio[0] + pad[0]
+                ymin = ymin * ratio[1] + pad[1]
+                ymax = ymax * ratio[1] + pad[1]
+            xmin = np.clip(xmin, a_min=pad[0]+1, a_max=self.image_size[0] - pad[2])
+            xmax = np.clip(xmax, a_min=pad[0]+1, a_max=self.image_size[0] - pad[2])
+            ymin = np.clip(ymin, a_min=pad[1]+1, a_max=self.image_size[1] - pad[3])
+            ymax = np.clip(ymax, a_min=pad[1]+1, a_max=self.image_size[1] - pad[3])
             xmin, xmax, ymin, ymax = np.round(xmin), np.round(xmax), np.round(ymin), np.round(ymax)
-            idx = int(np.floor((xmax + xmin) / 2. / cell_dims[0])), int(np.floor((ymax + ymin) / 2. / cell_dims[1]))
+            if xmax == xmin or ymax == ymin:
+                continue
+            xmin /= cell_dims[0]
+            xmax /= cell_dims[0]
+            ymin /= cell_dims[1]
+            ymax /= cell_dims[1]
+            idx = int(np.floor((xmax + xmin) / 2.)), int(np.floor((ymax + ymin) / 2.))
             if (target[idx[1], idx[0], 4::self.num_features] == 0).all():
                 ground_truth = torch.tensor([[xmin, ymin, xmax, ymax]], dtype=torch.float32)
                 anchors = torch.zeros((self.num_anchors, 4))
@@ -190,6 +206,11 @@ class PascalDatasetYOLO(Dataset):
                 continue
 
         image = torchvision.transforms.ToTensor()(image)
+        if self.do_transforms:
+            image = torchvision.transforms.RandomErasing(p=0.25,
+                                                         scale=(0.05, 0.1),
+                                                         ratio=(0.3, 3.3),
+                                                         value=(0.5, 0.5, 0.5))(image)
 
         target = torch.tensor(target)
         target = target.permute(2, 0, 1)

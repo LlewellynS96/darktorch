@@ -256,7 +256,6 @@ def add_bbox_to_image(image, bbox, confidence, cls):
     xmin, ymin, xmax, ymax = bbox
     # Draw a bounding box.
     color = np.random.uniform(0., 255., size=3)
-    print('({}, {}), ({}, {})'.format(xmin, ymin, xmax, ymax))
     cv2.rectangle(image, (xmin, ymax), (xmax, ymin), color, 3)
 
     # Display the label at the top of the bounding box
@@ -421,7 +420,42 @@ def get_letterbox_padding(old_size, desired_size):
     delta = desired_size - new_size
     padding = (delta[0] // 2, delta[1] // 2, delta[0] - (delta[0] // 2), delta[1] - (delta[1] // 2))
 
-    return ratio, padding
+    return [ratio] * 2, padding
+
+
+def exponential_decay_scheduler(optimizer, initial_lr=None, warm_up=1, decay=0.05):
+    lr = optimizer.defaults['lr']
+    if initial_lr is None:
+        initial_lr = lr / 10.
+    if warm_up > 0:
+        gradient = (lr - initial_lr) / float(warm_up)
+
+    def foo(e):
+        if e < warm_up:
+            return gradient * e + initial_lr
+        else:
+            return lr * (1. - decay) ** (e - warm_up)
+
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=foo)
+
+    return scheduler
+
+
+def step_decay_scheduler(optimizer, initial_lr=None, warm_up=1, steps=10, decay=0.1):
+    lr = optimizer.defaults['lr']
+    if initial_lr is None:
+        initial_lr = lr / 10.
+    if warm_up > 0:
+        gradient = (lr - initial_lr) / float(warm_up)
+
+    def foo(e):
+        if e < warm_up:
+            return gradient * e + initial_lr
+        else:
+            return lr * decay ** ((e - warm_up) // steps)
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=foo)
+
+    return scheduler
 
 
 def main():
