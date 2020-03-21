@@ -166,12 +166,12 @@ class YOLOv2tiny(nn.Module):
                     loss['total'].backward()
                     # torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=5., norm_type='inf')
                     optimizer.step()
-                    inner.set_postfix_str(' Training Loss: {:.6f}'.format(np.mean(batch_loss)))
+                    inner.set_postfix_str(' Training Loss: {:.6f}'.format(np.median(batch_loss)))
                     inner.update()
                     if inner.n % MULTI_SCALE_FREQ == 0 and multi_scale:
                         random_size = (2 * np.random.randint(4, 10) + 1) * self.downscale_factor
                         self.set_image_size(random_size, random_size, dataset=train_data)
-                train_loss.append(np.mean(batch_loss))
+                train_loss.append(np.median(batch_loss))
                 if val_data is not None:
                     self.reset_image_size(dataset=[train_data, val_data])
                     val_loss.append(self.calculate_loss(val_data, 2 * batch_size))
@@ -235,7 +235,7 @@ class YOLOv2tiny(nn.Module):
         Returns
         -------
         float
-            The mean loss over the fraction of the images that were sampled from
+            The median loss over the fraction of the images that were sampled from
             the data.
         """
         val_dataloader = DataLoader(dataset=data,
@@ -253,7 +253,7 @@ class YOLOv2tiny(nn.Module):
                 if i > len(val_dataloader) * fraction:
                     break
 
-        return np.mean(losses)
+        return np.median(losses)
 
     def parse_cfg(self, file):
 
