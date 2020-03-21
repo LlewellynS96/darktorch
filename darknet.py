@@ -12,10 +12,10 @@ NOOBJ_IOU_THRESHOLD = 0.6
 LAMBDA_COORD = 5.
 LAMBDA_OBJ = 1.
 LAMBDA_CLASS = 1.
-LAMBDA_NOOBJ = 1.
+LAMBDA_NOOBJ = 0.5
 
 MULTI_SCALE_FREQ = 10.
-USE_CROSS_ENTROPY = False
+USE_CROSS_ENTROPY = True
 
 
 class YOLOv2tiny(nn.Module):
@@ -96,7 +96,7 @@ class YOLOv2tiny(nn.Module):
                                                              torch.sqrt(targets[obj_mask, 2]))
             loss['coord'] += nn.MSELoss(reduction=REDUCTION)(torch.sqrt(predictions[obj_mask, 3]),
                                                              torch.sqrt(targets[obj_mask, 3]))
-            loss['coord'] *= LAMBDA_COORD / batch_size
+            loss['coord'] *= LAMBDA_COORD
 
             if obj_mask.numel() > 0:
                 if USE_CROSS_ENTROPY:
@@ -106,25 +106,24 @@ class YOLOv2tiny(nn.Module):
                     predictions[obj_mask, 5:] = nn.Softmax(dim=-1)(predictions[obj_mask, 5:])
                     loss['class'] = nn.MSELoss(reduction=REDUCTION)(predictions[obj_mask, 5:],
                                                                     targets[obj_mask, 5:])
-                loss['class'] *= LAMBDA_CLASS / batch_size
+                loss['class'] *= LAMBDA_CLASS
             else:
                 loss['class'] = 0.
 
             loss['object'] = nn.MSELoss(reduction=REDUCTION)(predictions[obj_mask, 4],
                                                              ious[obj_mask])
-
-            loss['object'] *= LAMBDA_OBJ / batch_size
+            loss['object'] *= LAMBDA_OBJ
 
             loss['no_object'] = nn.MSELoss(reduction=REDUCTION)(predictions[noobj_mask, 4],
                                                                 targets[noobj_mask, 4])
-            loss['no_object'] *= LAMBDA_NOOBJ / batch_size
+            loss['no_object'] *= LAMBDA_NOOBJ
 
         else:
             loss['object'] = torch.tensor([0.], device=self.device)
             loss['coord'] = torch.tensor([0.], device=self.device)
             loss['class'] = torch.tensor([0.], device=self.device)
-            loss['no_object'] = LAMBDA_NOOBJ / batch_size * nn.MSELoss(reduction=REDUCTION)(predictions[:, 4],
-                                                                                            targets[:, 4])
+            loss['no_object'] = LAMBDA_NOOBJ * nn.MSELoss(reduction=REDUCTION)(predictions[:, 4],
+                                                                               targets[:, 4])
 
         loss['total'] = loss['object'] + loss['coord'] + loss['class'] + loss['no_object']
 
@@ -165,12 +164,12 @@ class YOLOv2tiny(nn.Module):
                     loss = self.loss(predictions, targets)
                     batch_loss.append(loss['total'].item())
                     loss['total'].backward()
-                    torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=5., norm_type='inf')
+                    # torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=5., norm_type='inf')
                     optimizer.step()
                     inner.set_postfix_str(' Training Loss: {:.6f}'.format(np.mean(batch_loss)))
                     inner.update()
                     if inner.n % MULTI_SCALE_FREQ == 0 and multi_scale:
-                        random_size = (2 * np.random.randint(4, 10) + 1) * self.downscale_factor  # preferably randint(4,10)
+                        random_size = (2 * np.random.randint(4, 10) + 1) * self.downscale_factor
                         self.set_image_size(random_size, random_size, dataset=train_data)
                 train_loss.append(np.mean(batch_loss))
                 if val_data is not None:
@@ -217,7 +216,7 @@ class YOLOv2tiny(nn.Module):
         """
         pickle.dump(self, open(name, 'wb'), protocol=pickle.HIGHEST_PROTOCOL)
 
-    def calculate_loss(self, data, batch_size, fraction=0.05):
+    def calculate_loss(self, data, batch_size, fraction=0.25):
         """
         Calculates the loss for a random partition of a given dataset without
         tracking gradients. Useful for displaying the validation loss during
@@ -646,7 +645,7 @@ class YOLOv2tiny(nn.Module):
             with tqdm(total=len(dataloader),
                       desc='Exporting',
                       leave=True) as pbar:
-                for images, image_info, targets in dataloader:
+                for images, image_info in dataloader:
                     images = images.to(self.device)
                     predictions = self(images)
                     # predictions = targets
@@ -695,6 +694,9 @@ class YOLOv2tiny(nn.Module):
                     confidence_.append(confidences)
                     classes_.append(classes)
                     image_idx_.append(image_idx)
+
+                    # random_size = (2 * np.random.randint(4, 10) + 1) * self.downscale_factor
+                    # self.set_image_size(random_size, random_size, dataset=dataset)
 
                     pbar.update()
 

@@ -15,7 +15,7 @@ if __name__ == '__main__':
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     # device = 'cpu'
 
-    train = False
+    train = True
     freeze = False
     predict = True
 
@@ -57,12 +57,13 @@ if __name__ == '__main__':
                                   image_size=model.default_image_size,
                                   grid_size=model.grid_size,
                                   anchors=model.anchors,
-                                  do_transforms=False
+                                  do_transforms=False,
+                                  return_targets=False
                                   )
 
     model.load_weights('models/darknet.weights', only_imagenet=True)
     # model.load_weights('models/yolov2-tiny-voc.weights')
-    model = pickle.load(open('YOLOv2-tiny_50.pkl', 'rb'))
+    # model = pickle.load(open('YOLOv2-tiny_100.pkl', 'rb'))
     # model = model.to(device)
     # model.device = device
 
@@ -73,9 +74,9 @@ if __name__ == '__main__':
         torch.random.manual_seed(12345)
         np.random.seed(12345)
 
-        optimizer = optim.SGD(model.get_trainable_parameters(), lr=1e-2, momentum=0.9, weight_decay=5e-4, nesterov=True)
+        optimizer = optim.SGD(model.get_trainable_parameters(), lr=1e-3, momentum=0.9, weight_decay=5e-4, nesterov=True)
 
-        scheduler = step_decay_scheduler(optimizer, warm_up=5, steps=30, decay=0.1)
+        scheduler = step_decay_scheduler(optimizer, warm_up=3, steps=30, decay=0.5)
 
         model.fit(train_data=train_data,
                   val_data=val_data,
@@ -98,7 +99,7 @@ if __name__ == '__main__':
     if predict:
         model.predict(dataset=test_data,
                       batch_size=64,
-                      confidence_threshold=0.01,
+                      confidence_threshold=0.001,
                       overlap_threshold=0.45,
                       show=False,
                       export=True

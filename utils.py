@@ -372,37 +372,38 @@ def get_annotations(annotations_dir, img):
     return annotations
 
 
-def find_best_anchors(classes, k=5, max_iter=20, root_dir='data/VOC2012/', dataset='train', skip_truncated=True, device='cuda'):
+def find_best_anchors(classes, root_dir, dataset, k=5, max_iter=20, skip_truncated=True, device='cuda'):
 
-    sets_dir = os.path.join(root_dir, 'ImageSets', 'Main')
-    annotations_dir = os.path.join(root_dir, 'Annotations')
+    annotations_dir = [os.path.join(r, 'Annotations') for r in root_dir]
+    sets_dir = [os.path.join(r, 'ImageSets', 'Main') for r in root_dir]
 
     images = []
 
-    for cls in classes:
-        file = os.path.join(sets_dir, '{}_{}.txt'.format(cls, dataset))
-        with open(file) as f:
-            for line in f:
-                image_desc = line.split()
-                if image_desc[1] == '1':
-                    images.append(image_desc[0])
+    for d in range(len(dataset)):
+        for cls in classes:
+            file = os.path.join(sets_dir[d], '{}_{}.txt'.format(cls, dataset[d]))
+            with open(file) as f:
+                for line in f:
+                    image_desc = line.split()
+                    if image_desc[1] == '1':
+                        images.append((d, image_desc[0]))
 
     images = list(set(images))
     bboxes = []
 
     for image in images:
-        annotations = get_annotations(annotations_dir, image)
+        annotations = get_annotations(annotations_dir[image[0]], image[1])
         for annotation in annotations:
-            _, width, height, xmin, ymin, xmax, ymax, truncated, _ = annotation
+            name, height, width, xmin, ymin, xmax, ymax, truncated, difficult = annotation
             if skip_truncated and truncated:
                 continue
-            width = xmax - xmin
-            height = ymax - ymin
-            for i in range(10, 20):
+            width = (xmax - xmin) / width
+            height = (ymax - ymin) / height
+            for i in [13]:  #[2. * d + 1 for d in range(4, 10)]:
                 bboxes.append([0., 0., i * width, i * height])
 
     bboxes = torch.tensor(bboxes, device=device)
-    anchors = torch.tensor(([0., 0., 10., 10.] * np.random.random((k, 4))).astype(dtype=np.float32), device=device)
+    anchors = torch.tensor(([0., 0., 13., 13.] * np.random.random((k, 4))).astype(dtype=np.float32), device=device)
 
     for _ in range(max_iter):
         ious = jaccard(bboxes, anchors)
@@ -460,16 +461,18 @@ def step_decay_scheduler(optimizer, initial_lr=None, warm_up=1, steps=10, decay=
 
 def main():
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    device = 'cpu'
 
-    classes = read_classes('../data/VOC2012/voc.names')
-    print(find_best_anchors(classes,
-                            k=10,
+    classes = read_classes('../../../Data/VOC/2012/voc.names')
+    a = find_best_anchors(classes,
+                            k=5,
                             max_iter=1000,
-                            root_dir='../data/VOC2012/',
-                            dataset='trainval',
+                            root_dir=['../../../Data/VOC/2007/', '../../../Data/VOC/2012/'],
+                            dataset=['trainval'] * 2,
                             skip_truncated=False,
-                            device=device))
+                            device=device)
+
+    for x, y in a:
+        print('{},{}, '.format(x, y), end='')
 
 
 if __name__ == '__main__':

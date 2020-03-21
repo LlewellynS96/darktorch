@@ -2,7 +2,7 @@ import os
 import torch
 import numpy as np
 from torch.utils.data import Dataset
-from PIL import Image, ImageOps
+from PIL import Image, ImageOps, ImageFilter
 import torchvision.transforms
 from utils import jaccard, read_classes, get_annotations, get_letterbox_padding
 
@@ -19,7 +19,7 @@ class PascalDatasetYOLO(Dataset):
     """
 
     def __init__(self, anchors, class_file, root_dir, dataset=['train'], skip_truncated=True, do_transforms=False,
-                 skip_difficult=True, image_size=(416, 416), grid_size=(13, 13)):
+                 skip_difficult=True, image_size=(416, 416), grid_size=(13, 13), return_targets=True):
         """
         Initialise the dataset object with some network and dataset specific parameters.
 
@@ -80,6 +80,7 @@ class PascalDatasetYOLO(Dataset):
         self.num_anchors = len(self.anchors)
 
         self.do_transforms = do_transforms
+        self.return_targets = return_targets
 
         for d in range(len(dataset)):
             for cls in self.classes:
@@ -115,11 +116,12 @@ class PascalDatasetYOLO(Dataset):
 
         """
         dataset, img = self.images[index]
-        # dataset, img = self.images[0] if index % 2 else self.images[1]
+        # dataset, img = self.images[5] if index % 2 else self.images[8]
         image = Image.open(os.path.join(self.images_dir[dataset], img + '.jpg'))
         image_info = {'id': img, 'width': image.width, 'height': image.height, 'dataset': self.dataset[dataset]}
-        random_flip = np.random.random()
         if self.do_transforms:
+            random_flip = np.random.random()
+            random_blur = np.random.random()
             image = torchvision.transforms.RandomGrayscale(p=0.1)(image)
             image = torchvision.transforms.ColorJitter(brightness=0.5, contrast=0.5, saturation=0.5, hue=0.1)(image)
             oversize = 0.2
@@ -130,6 +132,8 @@ class PascalDatasetYOLO(Dataset):
             image = image.resize(image_resize)
             if random_flip >= 0.5:
                 image = torchvision.transforms.functional.hflip(image)
+            if random_blur >= 0.75:
+                image = image.filter(ImageFilter.GaussianBlur(radius=1))
             image = torchvision.transforms.functional.crop(image,
                                                            *crop_offset[::-1],
                                                            image_info['height'], image_info['width'])
@@ -146,46 +150,58 @@ class PascalDatasetYOLO(Dataset):
             image_info['padding'] = pad
             image_info['ratio'] = ratio
 
+        image = torchvision.transforms.ToTensor()(image)
+        if self.do_transforms:
+            image = torchvision.transforms.RandomErasing(p=0.25,
+                                                         scale=(0.05, 0.1),
+                                                         ratio=(0.3, 3.3),
+                                                         value=(0.5, 0.5, 0.5))(image)
+
         assert image.size == self.image_size
 
-        annotations = get_annotations(self.annotations_dir[dataset], img)
-        target = np.zeros((self.grid_size[1], self.grid_size[0], self.num_anchors * self.num_features),
-                          dtype=np.float32)
-        # For each object in image.
-        for annotation in annotations:
-            name, height, width, xmin, ymin, xmax, ymax, truncated, difficult = annotation
-            if (self.skip_truncated and truncated) or (self.skip_difficult and difficult):
-                continue
-            if name not in self.classes:
-                continue
-            cell_dims = self.image_size[1] / self.grid_size[1], self.image_size[0] / self.grid_size[0]
-            if self.do_transforms:
-                if random_flip >= 0.5:
-                    tmp = xmin
-                    xmin = width - xmax
-                    xmax = width - tmp
-                xmin = (xmin * (1. + oversize) - crop_offset[0]) * ratio[0] + pad[0]
-                xmax = (xmax * (1. + oversize) - crop_offset[0]) * ratio[0] + pad[0]
-                ymin = (ymin * (1. + oversize) - crop_offset[1]) * ratio[1] + pad[1]
-                ymax = (ymax * (1. + oversize) - crop_offset[1]) * ratio[1] + pad[1]
-            else:
-                xmin = xmin * ratio[0] + pad[0]
-                xmax = xmax * ratio[0] + pad[0]
-                ymin = ymin * ratio[1] + pad[1]
-                ymax = ymax * ratio[1] + pad[1]
-            xmin = np.clip(xmin, a_min=pad[0]+1, a_max=self.image_size[0] - pad[2])
-            xmax = np.clip(xmax, a_min=pad[0]+1, a_max=self.image_size[0] - pad[2])
-            ymin = np.clip(ymin, a_min=pad[1]+1, a_max=self.image_size[1] - pad[3])
-            ymax = np.clip(ymax, a_min=pad[1]+1, a_max=self.image_size[1] - pad[3])
-            xmin, xmax, ymin, ymax = np.round(xmin), np.round(xmax), np.round(ymin), np.round(ymax)
-            if xmax == xmin or ymax == ymin:
-                continue
-            xmin /= cell_dims[0]
-            xmax /= cell_dims[0]
-            ymin /= cell_dims[1]
-            ymax /= cell_dims[1]
-            idx = int(np.floor((xmax + xmin) / 2.)), int(np.floor((ymax + ymin) / 2.))
-            if (target[idx[1], idx[0], 4::self.num_features] == 0).all():
+        if self.return_targets:
+            annotations = get_annotations(self.annotations_dir[dataset], img)
+            target = np.zeros((self.grid_size[1], self.grid_size[0], self.num_anchors * self.num_features),
+                              dtype=np.float32)
+            # For each object in image.
+            for annotation in annotations:
+                name, height, width, xmin, ymin, xmax, ymax, truncated, difficult = annotation
+                if (self.skip_truncated and truncated) or (self.skip_difficult and difficult):
+                    continue
+                if name not in self.classes:
+                    continue
+                cell_dims = self.image_size[1] / self.grid_size[1], self.image_size[0] / self.grid_size[0]
+                if self.do_transforms:
+                    if random_flip >= 0.5:
+                        tmp = xmin
+                        xmin = width - xmax
+                        xmax = width - tmp
+                    xmin = (xmin * (1. + oversize) - crop_offset[0]) * ratio[0] + pad[0]
+                    xmax = (xmax * (1. + oversize) - crop_offset[0]) * ratio[0] + pad[0]
+                    ymin = (ymin * (1. + oversize) - crop_offset[1]) * ratio[1] + pad[1]
+                    ymax = (ymax * (1. + oversize) - crop_offset[1]) * ratio[1] + pad[1]
+                else:
+                    xmin = xmin * ratio[0] + pad[0]
+                    xmax = xmax * ratio[0] + pad[0]
+                    ymin = ymin * ratio[1] + pad[1]
+                    ymax = ymax * ratio[1] + pad[1]
+                xmin = np.clip(xmin, a_min=pad[0]+1, a_max=self.image_size[0] - pad[2])
+                xmax = np.clip(xmax, a_min=pad[0]+1, a_max=self.image_size[0] - pad[2])
+                ymin = np.clip(ymin, a_min=pad[1]+1, a_max=self.image_size[1] - pad[3])
+                ymax = np.clip(ymax, a_min=pad[1]+1, a_max=self.image_size[1] - pad[3])
+                xmin, xmax, ymin, ymax = np.round(xmin), np.round(xmax), np.round(ymin), np.round(ymax)
+                if xmax == xmin or ymax == ymin:
+                    continue
+                xmin /= cell_dims[0]
+                xmax /= cell_dims[0]
+                ymin /= cell_dims[1]
+                ymax /= cell_dims[1]
+                idx = int(np.floor((xmax + xmin) / 2.)), int(np.floor((ymax + ymin) / 2.))
+                # =============================================================
+                #      WHY SHOULD A SINGLE CELL ONLY DETECT ONE OBJECT?
+                # =============================================================
+                # if (target[idx[1], idx[0], 4::self.num_features] == 0).all():
+                # =============================================================
                 ground_truth = torch.tensor([[xmin, ymin, xmax, ymax]], dtype=torch.float32)
                 anchors = torch.zeros((self.num_anchors, 4))
                 anchors[:, 2:] = self.anchors.clone()
@@ -202,20 +218,13 @@ class PascalDatasetYOLO(Dataset):
                 target[idx[1], idx[0], assign * self.num_features + 4] = 1.
                 target[idx[1], idx[0], assign * self.num_features + 5:(assign + 1) * self.num_features] = \
                     self.encode_categorical(name)
-            else:
-                continue
 
-        image = torchvision.transforms.ToTensor()(image)
-        if self.do_transforms:
-            image = torchvision.transforms.RandomErasing(p=0.25,
-                                                         scale=(0.05, 0.1),
-                                                         ratio=(0.3, 3.3),
-                                                         value=(0.5, 0.5, 0.5))(image)
+            target = torch.tensor(target)
+            target = target.permute(2, 0, 1)
 
-        target = torch.tensor(target)
-        target = target.permute(2, 0, 1)
-
-        return image, image_info, target
+            return image, image_info, target
+        else:
+            return image, image_info
 
     def __len__(self):
 

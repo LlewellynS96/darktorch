@@ -42,7 +42,7 @@ class YOLOv2Layer(nn.Module):
         x[:, 2] = anchors[:, 0] * torch.exp(x[:, 2])
         x[:, 3] = anchors[:, 1] * torch.exp(x[:, 3])
 
-        # Convert t_o --> IoU and get clacd.../ss probabilities.
+        # Convert t_o --> IoU and get class probabilities.
         x[:, 4] = torch.sigmoid(x[:, 4])
 
         x = x.contiguous().view(*in_shape)
