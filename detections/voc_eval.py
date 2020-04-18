@@ -207,12 +207,12 @@ if __name__ == '__main__':
     for cl in cls:
         rec, prec, ap = voc_eval(#detpath='./comp4_det_test_{}.txt',
                                  detpath='./YOLOv2-tiny_det_test_{}.txt',
-                                 annopath='../../../../Data/VOC/2007/Annotations/{}.xml',
-                                 imagesetfile='../../../../Data/VOC/2007/ImageSets/Main/test.txt',
+                                 annopath='../../../../Data/VOCdevkit/VOC2007/Annotations/{}.xml',
+                                 imagesetfile='../../../../Data/VOCdevkit/VOC2007/ImageSets/Main/test.txt',
                                  classname=cl,
                                  cachedir='.',
                                  ovthresh=0.5,
-                                 use_07_metric=True)
+                                 use_07_metric=False)
         mean_ap.append(ap)
         print(ap)
         # plt.plot(rec, prec)

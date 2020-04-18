@@ -7,14 +7,11 @@ from utils import NUM_WORKERS
 from utils import jaccard, xywh2xyxy, non_maximum_suppression, to_numpy_image, add_bbox_to_image, export_prediction
 from layers import *
 
-REDUCTION = 'sum'
-NOOBJ_IOU_THRESHOLD = 0.6
 LAMBDA_COORD = 5.
 LAMBDA_OBJ = 1.
 LAMBDA_CLASS = 1.
-LAMBDA_NOOBJ = 0.5
+LAMBDA_NOOBJ = 1.
 
-MULTI_SCALE_FREQ = 10.
 USE_CROSS_ENTROPY = True
 
 
@@ -38,7 +35,8 @@ class YOLOv2tiny(nn.Module):
         self.image_size = self.default_image_size
         self.num_classes = int(self.blocks[-1]['classes'])
         self.num_features = 5 + self.num_classes
-        self.downscale_factor = self.calculate_downscale_factor()
+
+        self.stride = self.calculate_stride()
         self.grid_size = self.calculate_grid_size()
 
         self.build_modules()
@@ -46,18 +44,40 @@ class YOLOv2tiny(nn.Module):
         self.anchors = self.collect_anchors()
         self.num_anchors = len(self.anchors)
 
+        self.lr = float(self.net_info['learning_rate'])
+        self.momentum = float(self.net_info['momentum'])
+        self.weight_decay = float(self.net_info['decay'])
+        self.rescore = True if self.blocks[-1]['rescore'] is '1' else False
+        self.noobj_iou_threshold = float(self.blocks[-1]['thresh'])
+        self.multi_scale = True if self.blocks[-1]['random'] is '1' else False
+
+        self.steps = list(map(float, self.net_info['steps'].split(',')))
+        self.scales = list(map(float, self.net_info['scales'].split(',')))
+
+        self.batch_size = int(self.net_info['batch'])
+        self.subdivisions = int(self.net_info['subdivisions'])
+        self.max_batches = int(self.net_info['max_batches'])
+
+        assert self.batch_size % self.subdivisions == 0, 'Subdivisions must be factor of batch size.'
+
+        self.subdivision_size = self.batch_size / float(self.subdivisions)
+
+        self.iteration = 0
+
         self.to(device)
 
     def forward(self, x):
 
         assert x.dim() == 4
 
+        self.set_image_size(x.shape[-2:])
+
         for layer in self.layers:
             x = layer(x)
 
         return x
 
-    def loss(self, predictions, targets):
+    def loss(self, predictions, targets, stats):
 
         assert predictions.shape == targets.shape
 
@@ -70,73 +90,93 @@ class YOLOv2tiny(nn.Module):
         targets = targets.contiguous().view(batch_size, -1, self.num_features)
         predictions = predictions.contiguous().view(batch_size, -1, self.num_features)
 
-        image_idx = torch.arange(batch_size, dtype=torch.float, device=self.device).reshape(-1, 1, 1)
-        targets[:, :, :2] += image_idx
-        predictions[:, :, :2] += image_idx
+        img_idx = torch.arange(batch_size, dtype=torch.float, device=self.device).reshape(-1, 1) * self.grid_size[0]
+        targets[:, :, 0] += 2. * img_idx
+        predictions[:, :, 0] += 2. * img_idx
+        img_idx = torch.arange(batch_size, dtype=torch.float, device=self.device).reshape(-1, 1) * self.grid_size[1]
+        targets[:, :, 1] += 2. * img_idx
+        predictions[:, :, 1] += 2. * img_idx
 
         targets = targets.contiguous().view(-1, self.num_features)
         predictions = predictions.contiguous().view(-1, self.num_features)
 
         obj_mask = torch.nonzero(targets[:, 4]).flatten()
+        num_obj = len(obj_mask)
 
         if obj_mask.numel() > 0:
             predictions_xyxy = xywh2xyxy(predictions[:, :4].detach())
             targets_xyxy = xywh2xyxy(targets[obj_mask, :4])
 
-            ious = jaccard(predictions_xyxy, targets_xyxy)
-            ious, _ = torch.max(ious, dim=1)
+            all_ious = jaccard(predictions_xyxy, targets_xyxy)
+            ious, _ = torch.max(all_ious, dim=1)
+            stats['avg_obj_iou'].append(all_ious[obj_mask].diag().mean().item())
 
-            mask = torch.nonzero(ious > NOOBJ_IOU_THRESHOLD).squeeze()
-            targets[mask, 4] = 2.
+            mask = torch.nonzero(ious > self.noobj_iou_threshold).squeeze()
+            targets[mask, 4] = 1.
             noobj_mask = torch.nonzero(targets[:, 4] == 0.).squeeze()
 
-            loss['coord'] = nn.MSELoss(reduction=REDUCTION)(predictions[obj_mask, 0], targets[obj_mask, 0])
-            loss['coord'] += nn.MSELoss(reduction=REDUCTION)(predictions[obj_mask, 1], targets[obj_mask, 1])
-            loss['coord'] += nn.MSELoss(reduction=REDUCTION)(torch.sqrt(predictions[obj_mask, 2]),
-                                                             torch.sqrt(targets[obj_mask, 2]))
-            loss['coord'] += nn.MSELoss(reduction=REDUCTION)(torch.sqrt(predictions[obj_mask, 3]),
-                                                             torch.sqrt(targets[obj_mask, 3]))
-            loss['coord'] *= LAMBDA_COORD
+            loss['coord'] = nn.MSELoss(reduction='sum')(predictions[obj_mask, 0], targets[obj_mask, 0])
+            loss['coord'] += nn.MSELoss(reduction='sum')(predictions[obj_mask, 1], targets[obj_mask, 1])
+            loss['coord'] += nn.MSELoss(reduction='sum')(torch.sqrt(predictions[obj_mask, 2]),
+                                                         torch.sqrt(targets[obj_mask, 2]))
+            loss['coord'] += nn.MSELoss(reduction='sum')(torch.sqrt(predictions[obj_mask, 3]),
+                                                         torch.sqrt(targets[obj_mask, 3]))
+            loss['coord'] *= LAMBDA_COORD / (4. * self.batch_size)
 
-            if obj_mask.numel() > 0:
-                if USE_CROSS_ENTROPY:
-                    targets_long = torch.argmax(targets[obj_mask, 5:], axis=1)
-                    loss['class'] = nn.CrossEntropyLoss(reduction=REDUCTION)(predictions[obj_mask, 5:], targets_long)
-                else:
-                    predictions[obj_mask, 5:] = nn.Softmax(dim=-1)(predictions[obj_mask, 5:])
-                    loss['class'] = nn.MSELoss(reduction=REDUCTION)(predictions[obj_mask, 5:],
-                                                                    targets[obj_mask, 5:])
-                loss['class'] *= LAMBDA_CLASS
+            if self.iteration * self.batch_size < 12800:
+                loss['precoord'] = 0.1 / (4. * self.batch_size) * nn.MSELoss(reduction='sum')(predictions[noobj_mask, 0],
+                                                                                              targets[noobj_mask, 0])
+                loss['precoord'] += 0.1 / (4. * self.batch_size) * nn.MSELoss(reduction='sum')(predictions[noobj_mask, 1],
+                                                                                               targets[noobj_mask, 1])
+                loss['precoord'] += 0.1 / (4. * self.batch_size) * nn.MSELoss(reduction='sum')(torch.sqrt(predictions[noobj_mask, 2]),
+                                                                                               torch.sqrt(targets[noobj_mask, 2]))
+                loss['precoord'] += 0.1 / (4. * self.batch_size) * nn.MSELoss(reduction='sum')(torch.sqrt(predictions[noobj_mask, 3]),
+                                                                                               torch.sqrt(targets[noobj_mask, 3]))
+
+            predictions[obj_mask, 5:] = F.log_softmax(predictions[obj_mask, 5:], dim=-1)
+            targets_long = torch.argmax(targets[obj_mask, 5:], dim=1)
+            if USE_CROSS_ENTROPY:
+                loss['class'] = nn.NLLLoss(reduction='sum')(predictions[obj_mask, 5:], targets_long)
             else:
-                loss['class'] = 0.
+                loss['class'] = nn.MSELoss(reduction='sum')(torch.exp(predictions[obj_mask, 5:]),
+                                                            targets[obj_mask, 5:])
+            loss['class'] *= LAMBDA_CLASS / self.batch_size
+            stats['avg_class'].append(torch.exp(predictions[obj_mask, 5 + targets_long]).mean().item())
 
-            loss['object'] = nn.MSELoss(reduction=REDUCTION)(predictions[obj_mask, 4],
-                                                             ious[obj_mask])
-            loss['object'] *= LAMBDA_OBJ
+            if self.rescore:
+                loss['object'] = nn.MSELoss(reduction='sum')(predictions[obj_mask, 4],
+                                                             all_ious[obj_mask, torch.arange(num_obj)].detach())
+            else:
+                loss['object'] = nn.MSELoss(reduction='sum')(predictions[obj_mask, 4],
+                                                             targets[obj_mask, 4])
+            loss['object'] *= LAMBDA_OBJ / self.batch_size
+            stats['avg_pobj'].append(predictions[obj_mask, 4].mean().item())
 
-            loss['no_object'] = nn.MSELoss(reduction=REDUCTION)(predictions[noobj_mask, 4],
-                                                                targets[noobj_mask, 4])
-            loss['no_object'] *= LAMBDA_NOOBJ
-
+            loss['no_object'] = nn.MSELoss(reduction='sum')(predictions[noobj_mask, 4],
+                                                            targets[noobj_mask, 4])
+            loss['no_object'] *= LAMBDA_NOOBJ / self.batch_size
+            stats['avg_pnoobj'].append(predictions[noobj_mask, 4].mean().item())
         else:
             loss['object'] = torch.tensor([0.], device=self.device)
             loss['coord'] = torch.tensor([0.], device=self.device)
             loss['class'] = torch.tensor([0.], device=self.device)
-            loss['no_object'] = LAMBDA_NOOBJ * nn.MSELoss(reduction=REDUCTION)(predictions[:, 4],
-                                                                               targets[:, 4])
+            loss['no_object'] = LAMBDA_NOOBJ / self.batch_size * nn.MSELoss(reduction='sum')(predictions[:, 4],
+                                                                                             targets[:, 4])
 
-        loss['total'] = loss['object'] + loss['coord'] + loss['class'] + loss['no_object']
+        loss['total'] = (loss['coord'] + loss['class'] + loss['object'] + loss['no_object'])
 
-        return loss
+        return loss, stats
 
-    def fit(self, train_data, optimizer, scheduler=None, batch_size=1, epochs=1,
-            val_data=None, shuffle=True, multi_scale=True, checkpoint_frequency=100):
+    def fit(self, train_data, optimizer, scheduler=None, epochs=1,
+            val_data=None, checkpoint_frequency=100):
+
+        if scheduler is not None:
+            scheduler.last_epoch = self.iteration
 
         self.train()
 
         train_dataloader = DataLoader(dataset=train_data,
-                                      batch_size=batch_size,
-                                      shuffle=shuffle,
+                                      batch_size=train_data.batch_size,
                                       num_workers=NUM_WORKERS)
 
         train_loss = []
@@ -151,7 +191,10 @@ class YOLOv2tiny(nn.Module):
         #           leave=True,
         #           unit='batches') as outer:
         for epoch in range(1, epochs + 1):
+            stats = {'avg_obj_iou': [], 'avg_class': [], 'avg_pobj': [], 'avg_pnoobj': []}
             batch_loss = []
+            if epoch == epochs:
+                train_data.disable_multiscale()
             with tqdm(total=len(train_dataloader),
                       desc='Epoch: [{}/{}]'.format(epoch, epochs),
                       leave=True,
@@ -159,40 +202,59 @@ class YOLOv2tiny(nn.Module):
                 for images, _, targets in train_dataloader:
                     images = images.to(self.device)
                     targets = targets.to(self.device)
-                    optimizer.zero_grad()
+                    if inner.n % self.subdivisions == 0:
+                        optimizer.zero_grad()
                     predictions = self(images)
-                    loss = self.loss(predictions, targets)
+                    loss, stats = self.loss(predictions, targets, stats)
                     batch_loss.append(loss['total'].item())
+                    if self.iteration * self.batch_size < 12800:
+                        loss['total'] += loss['precoord']
                     loss['total'].backward()
-                    # torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=5., norm_type='inf')
-                    optimizer.step()
-                    inner.set_postfix_str(' Training Loss: {:.6f}'.format(np.median(batch_loss)))
+                    weights = np.arange(1, 1 + len(batch_loss))
+                    disp_str = ' Training Loss: {:.6f}, '.format(np.average(batch_loss, weights=weights)) + \
+                               ' Avg IOU: {:.4f},  '.format(np.average(stats['avg_obj_iou'], weights=weights)) + \
+                               ' Avg P|Obj: {:.4f},  '.format(np.average(stats['avg_pobj'], weights=weights)) + \
+                               ' Avg P|Noobj: {:.4f},  '.format(np.average(stats['avg_pnoobj'], weights=weights)) + \
+                               ' Avg Class: {:.4f}, '.format(np.average(stats['avg_class'], weights=weights)) + \
+                               ' Iteration: {:d}'.format(self.iteration)
+                    inner.set_postfix_str(disp_str)
+                    torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=1., norm_type='inf')
+                    if (inner.n + 1) % self.subdivisions == 0:
+                        optimizer.step()
+                        if scheduler is not None:
+                            scheduler.step()
+                            self.iteration += 1
                     inner.update()
-                    if inner.n % MULTI_SCALE_FREQ == 0 and multi_scale:
-                        random_size = (2 * np.random.randint(4, 10) + 1) * self.downscale_factor
-                        self.set_image_size(random_size, random_size, dataset=train_data)
-                train_loss.append(np.median(batch_loss))
-                if val_data is not None:
-                    self.reset_image_size(dataset=[train_data, val_data])
-                    val_loss.append(self.calculate_loss(val_data, 2 * batch_size))
-                    inner.set_postfix_str(' Training Loss: {:.6f},  Validation Loss: {:.6f}'.format(train_loss[-1],
-                                                                                                    val_loss[-1]))
-                    with open('training_loss.txt', 'a') as fl:
-                        fl.writelines('Epoch: {}, Train loss: {:.6f}, Val loss: {:.6f}\n'.format(epoch,
-                                                                                                 train_loss[-1],
-                                                                                                 val_loss[-1]))
-                else:
-                    inner.set_postfix_str(' Training Loss: {:.6f}'.format(train_loss[-1]))
-            if scheduler is not None:
-                scheduler.step()
+                train_loss.append(np.average(batch_loss, weights=weights))
+            train_data.step()
+            if val_data is not None:
+                loss, val_stats = self.calculate_loss(val_data, val_data.batch_size, fraction=.1)
+                val_data.step()
+                val_loss.append(loss)
+                disp_str = ' Training Loss: {:.6f}, '.format(train_loss[-1]) + \
+                           ' Avg IOU: {:.4f},  '.format(np.average(stats['avg_obj_iou'], weights=weights)) + \
+                           ' Avg P|Obj: {:.4f},  '.format(np.average(stats['avg_pobj'], weights=weights)) + \
+                           ' Avg P|Noobj: {:.4f},  '.format(np.average(stats['avg_pnoobj'], weights=weights)) + \
+                           ' Avg Class: {:.4f}, '.format(np.average(stats['avg_class'], weights=weights)) + \
+                           ' Validation Loss: {:.6f}'.format(val_loss[-1])
+                inner.set_postfix_str(disp_str)
+                with open('training_loss.txt', 'a') as fl:
+                    fl.writelines('Epoch: {} '.format(epoch) + disp_str + '\n')
+            else:
+                disp_str = ' Training Loss: {:.6f}, '.format(train_loss[-1]) + \
+                           ' Avg IOU: {:.4f},  '.format(np.average(stats['avg_obj_iou'], weights=weights)) + \
+                           ' Avg P|Obj: {:.4f},  '.format(np.average(stats['avg_pobj'], weights=weights)) + \
+                           ' Avg P|Noobj: {:.4f},  '.format(np.average(stats['avg_pnoobj'], weights=weights)) + \
+                           ' Avg Class: {:.4f}'.format(np.average(stats['avg_class'], weights=weights)) + \
+                inner.set_postfix_str(disp_str)
             # if val_data is not None:
             #     outer.set_postfix_str(' Training Loss: {:.6f},  Validation Loss: {:.6f}'.format(train_loss[-1],
             #                                                                                     val_loss[-1]))
             # else:
             #     outer.set_postfix_str(' Training Loss: {:.6f}'.format(train_loss[-1]))
             # outer.update()
-            if epoch % checkpoint_frequency == 0:
-                self.save_model(self.name + '_{}.pkl'.format(epoch))
+        if epoch % checkpoint_frequency == 0:
+            self.save_model(self.name + '_{}.pkl'.format(epoch))
 
         return train_loss, val_loss
 
@@ -200,6 +262,7 @@ class YOLOv2tiny(nn.Module):
 
         assert isinstance(x, int)
         assert isinstance(y, int)
+        assert x == y, 'This implementation has only been tested for square grids.'
 
         self.grid_size = x, y
         for layer in self.detection_layers:
@@ -216,7 +279,7 @@ class YOLOv2tiny(nn.Module):
         """
         pickle.dump(self, open(name, 'wb'), protocol=pickle.HIGHEST_PROTOCOL)
 
-    def calculate_loss(self, data, batch_size, fraction=0.25):
+    def calculate_loss(self, data, batch_size, fraction=0.1):
         """
         Calculates the loss for a random partition of a given dataset without
         tracking gradients. Useful for displaying the validation loss during
@@ -235,25 +298,27 @@ class YOLOv2tiny(nn.Module):
         Returns
         -------
         float
-            The median loss over the fraction of the images that were sampled from
+            The mean loss over the fraction of the images that were sampled from
             the data.
         """
         val_dataloader = DataLoader(dataset=data,
                                     batch_size=batch_size,
-                                    shuffle=True,
                                     num_workers=NUM_WORKERS)
+
         losses = []
+        stats = {'avg_obj_iou': [], 'avg_class': [], 'avg_pobj': [], 'avg_pnoobj': []}
+
         with torch.no_grad():
             for i, (images, _, targets) in enumerate(val_dataloader, 1):
                 images = images.to(self.device)
                 targets = targets.to(self.device)
                 predictions = self(images)
-                loss = self.loss(predictions, targets)
+                loss, stats = self.loss(predictions, targets, stats)
                 losses.append(loss['total'].item())
                 if i > len(val_dataloader) * fraction:
                     break
 
-        return np.median(losses)
+        return np.mean(losses), stats
 
     def parse_cfg(self, file):
 
@@ -280,7 +345,7 @@ class YOLOv2tiny(nn.Module):
         self.net_info = self.blocks[0]
         self.blocks = self.blocks[1:]
 
-        return self.blocks
+        return self.net_info, self.blocks
 
     def build_modules(self):
 
@@ -313,6 +378,7 @@ class YOLOv2tiny(nn.Module):
                     pad = 0
 
                 conv_layer = nn.Conv2d(prev_filters, filters, kernel_size, stride, pad, bias=bias)
+                nn.init.normal_(conv_layer.weight, 0., 0.001)
                 module.add_module('conv_{0}'.format(index), conv_layer)
 
                 if batch_normalize:
@@ -413,6 +479,9 @@ class YOLOv2tiny(nn.Module):
         f = open(file, "rb")
         weights = np.fromfile(f, offset=16, dtype=np.float32)
 
+        while weights[0] == 0.:
+            weights = weights[1:]
+
         ptr = 0
 
         if not only_imagenet:
@@ -475,7 +544,7 @@ class YOLOv2tiny(nn.Module):
         else:
             # Ensure that the size of the ImageNet backbone matches that of the YOLO backbone.
             # The last layer of the ImageNet backbone (weights and biases) will not be loaded.
-            assert ptr == len(weights) - 1000 * 1024 - 1000, 'Weights file does not match model.'
+            assert ptr == len(weights) - 1000 * 1024 - 1000 or ptr == len(weights), 'Weights file does not match model.'
 
     def save_weights(self, file):
 
@@ -510,18 +579,18 @@ class YOLOv2tiny(nn.Module):
 
                 conv_layer.weight.data.detach().cpu().numpy().tofile(f)
 
-    def calculate_downscale_factor(self):
+    def calculate_stride(self):
 
-        downscale_factor = 1.
+        stride = 1.
         for block in self.blocks:
             if block['type'] == 'maxpool':
                 size = int(block['size'])
-                stride = int(block['stride'])
-                div = (1. - size) / stride + 1.
+                s = int(block['stride'])
+                div = (1. - size) / s + 1.
                 if div > 0:
-                    downscale_factor /= div
+                    stride /= div
 
-        return int(downscale_factor)
+        return int(stride)
 
     def collect_anchors(self):
 
@@ -535,12 +604,14 @@ class YOLOv2tiny(nn.Module):
 
         width, height = self.image_size
 
-        assert width % self.downscale_factor == 0
-        assert height % self.downscale_factor == 0
+        assert width % self.stride == 0
+        assert height % self.stride == 0
 
-        return int(width / self.downscale_factor), int(height / self.downscale_factor)
+        return int(width / self.stride), int(height / self.stride)
 
-    def set_image_size(self, x, y, dataset=None):
+    def set_image_size(self, xy):
+
+        x, y = xy
 
         assert isinstance(x, int)
         assert isinstance(y, int)
@@ -548,19 +619,6 @@ class YOLOv2tiny(nn.Module):
         self.image_size = x, y
         grid_size = self.calculate_grid_size()
         self.set_grid_size(*grid_size)
-
-        if dataset is not None:
-            if isinstance(dataset, (list, tuple)):
-                for d in dataset:
-                    d.set_image_size(x, y)
-                    d.set_grid_size(*grid_size)
-            else:
-                dataset.set_image_size(x, y)
-                dataset.set_grid_size(*grid_size)
-
-    def reset_image_size(self, dataset=None):
-
-        self.set_image_size(*self.default_image_size, dataset=dataset)
 
     def process_bboxes(self, predictions, image_info, confidence_threshold=0.01, overlap_threshold=0.5, nms=True):
 
@@ -627,13 +685,12 @@ class YOLOv2tiny(nn.Module):
                    torch.tensor([], device=self.device), \
                    torch.tensor([], device=self.device)
 
-    def predict(self, dataset, batch_size=10, confidence_threshold=0.1, overlap_threshold=0.5, show=True, export=True):
+    def predict(self, dataset, confidence_threshold=0.1, overlap_threshold=0.5, show=True, export=True):
 
         self.eval()
 
         dataloader = DataLoader(dataset=dataset,
-                                batch_size=batch_size,
-                                shuffle=False,
+                                batch_size=dataset.batch_size,
                                 num_workers=NUM_WORKERS)
 
         image_idx_ = []
@@ -645,6 +702,7 @@ class YOLOv2tiny(nn.Module):
             with tqdm(total=len(dataloader),
                       desc='Exporting',
                       leave=True) as pbar:
+                # for images, image_info, targets in dataloader:
                 for images, image_info in dataloader:
                     images = images.to(self.device)
                     predictions = self(images)
@@ -694,9 +752,6 @@ class YOLOv2tiny(nn.Module):
                     confidence_.append(confidences)
                     classes_.append(classes)
                     image_idx_.append(image_idx)
-
-                    # random_size = (2 * np.random.randint(4, 10) + 1) * self.downscale_factor
-                    # self.set_image_size(random_size, random_size, dataset=dataset)
 
                     pbar.update()
 

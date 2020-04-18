@@ -1,11 +1,13 @@
+import random
 import torch
 import numpy as np
 import cv2
 import os
 import xml.etree.ElementTree as Et
+from functools import reduce
 
 
-NUM_WORKERS = 0
+NUM_WORKERS = 8
 
 
 # Original author: Francisco Massa:
@@ -372,7 +374,7 @@ def get_annotations(annotations_dir, img):
     return annotations
 
 
-def find_best_anchors(classes, root_dir, dataset, k=5, max_iter=20, skip_truncated=True, device='cuda'):
+def find_best_anchors(classes, root_dir, dataset, k=5, max_iter=20, skip_truncated=True, weighted=True, device='cuda'):
 
     annotations_dir = [os.path.join(r, 'Annotations') for r in root_dir]
     sets_dir = [os.path.join(r, 'ImageSets', 'Main') for r in root_dir]
@@ -399,7 +401,7 @@ def find_best_anchors(classes, root_dir, dataset, k=5, max_iter=20, skip_truncat
                 continue
             width = (xmax - xmin) / width
             height = (ymax - ymin) / height
-            for i in [13]:  #[2. * d + 1 for d in range(4, 10)]:
+            for i in [2. * d + 1 for d in range(4, 10)]:
                 bboxes.append([0., 0., i * width, i * height])
 
     bboxes = torch.tensor(bboxes, device=device)
@@ -407,9 +409,17 @@ def find_best_anchors(classes, root_dir, dataset, k=5, max_iter=20, skip_truncat
 
     for _ in range(max_iter):
         ious = jaccard(bboxes, anchors)
-        idx = torch.argmax(ious, dim=1)
+        iou_max, idx = torch.max(ious, dim=1)
         for i in range(k):
-            anchors[i] = torch.mean(bboxes[idx == i], dim=0)
+            if weighted:
+                weights = (torch.tensor([1.], device=device) - iou_max[idx == i, None]) ** 2
+                anchors[i] = torch.sum(bboxes[idx == i] * weights, dim=0) / torch.sum(weights)  # Weighted k-means
+
+            else:
+                anchors[i] = torch.mean(bboxes[idx == i], dim=0)  # Normal k-means
+
+        sort = torch.argsort(anchors[:, 2], dim=0)
+        anchors = anchors[sort]
 
     return anchors[:, 2:]
 
@@ -435,14 +445,14 @@ def exponential_decay_scheduler(optimizer, initial_lr=None, warm_up=1, decay=0.0
         if e < warm_up:
             return gradient * e + initial_lr
         else:
-            return lr * (1. - decay) ** (e - warm_up)
+            return (1. - decay) ** (e - warm_up)
 
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=foo)
 
     return scheduler
 
 
-def step_decay_scheduler(optimizer, initial_lr=None, warm_up=1, steps=10, decay=0.1):
+def const_step_decay_scheduler(optimizer, initial_lr=None, warm_up=1, steps=10, decay=0.1):
     lr = optimizer.defaults['lr']
     if initial_lr is None:
         initial_lr = lr / 10.
@@ -453,7 +463,60 @@ def step_decay_scheduler(optimizer, initial_lr=None, warm_up=1, steps=10, decay=
         if e < warm_up:
             return gradient * e + initial_lr
         else:
-            return lr * decay ** ((e - warm_up) // steps)
+            return decay ** ((e - warm_up) // steps)
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=foo)
+
+    return scheduler
+
+
+def step_decay_scheduler(optimizer, steps=None, scales=None):
+    if steps is None or scales is None:
+        steps = [-1, 100]
+        scales = [0.1, 10.]
+
+    def foo(e):
+        if e < min(steps):
+            return 1.
+        for i, s in enumerate(reversed(steps)):
+            if e >= s:
+                return reduce(lambda x, y: x * y, scales[:len(steps) - i])
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=foo)
+
+    return scheduler
+
+
+def linear_scheduler(optimizer, initial_lr=None, final_lr=None, warm_up=1, iterations=100):
+    lr = optimizer.defaults['lr']
+    if initial_lr is None:
+        initial_lr = lr / 10.
+    if final_lr is None:
+        initial_lr = lr / 100.
+    if warm_up > 0:
+        gradient1 = (lr - initial_lr) / float(warm_up)
+        gradient2 = (final_lr - lr) / float(iterations - warm_up)
+
+    def foo(e):
+        if e < warm_up:
+            return gradient1 * e + initial_lr
+        else:
+            return gradient2 * e + lr
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=foo)
+
+    return scheduler
+
+
+def warmup_scheduler(optimizer, initial_lr=None, warm_up=1):
+    lr = optimizer.defaults['lr']
+    if initial_lr is None:
+        initial_lr = lr / 10.
+    if warm_up > 0:
+        gradient = (lr - initial_lr) / float(warm_up)
+
+    def foo(e):
+        if e < warm_up:
+            return gradient * e + initial_lr
+        else:
+            return lr
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=foo)
 
     return scheduler
@@ -462,17 +525,24 @@ def step_decay_scheduler(optimizer, initial_lr=None, warm_up=1, steps=10, decay=
 def main():
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-    classes = read_classes('../../../Data/VOC/2012/voc.names')
+    classes = read_classes('../../../Data/VOCdevkit/voc.names')
     a = find_best_anchors(classes,
-                            k=5,
-                            max_iter=1000,
-                            root_dir=['../../../Data/VOC/2007/', '../../../Data/VOC/2012/'],
-                            dataset=['trainval'] * 2,
-                            skip_truncated=False,
-                            device=device)
+                          k=5,
+                          max_iter=1000,
+                          root_dir=['../../../Data/VOCdevkit/VOC2007/', '../../../Data/VOCdevkit/VOC2012/'],
+                          dataset=['trainval'] * 2,
+                          skip_truncated=False,
+                          weighted=True,
+                          device=device)
 
     for x, y in a:
-        print('{},{}, '.format(x, y), end='')
+        print('{:.2f},{:.2f}, '.format(x, y), end='')
+
+
+def set_random_seed(x):
+    np.random.seed(x)
+    torch.random.manual_seed(x)
+    random.seed(x)
 
 
 if __name__ == '__main__':

@@ -15,7 +15,7 @@ class YOLOv2Layer(nn.Module):
     def __init__(self, parent, anchors):
         super(YOLOv2Layer, self).__init__()
         self.device = parent.device
-        self.anchors = torch.tensor(anchors, device=self.device)
+        self.anchors = torch.tensor(anchors, requires_grad=False, device=self.device)
         self.num_anchors = len(anchors)
         self.grid_size = parent.grid_size
         self.num_features = parent.num_features
@@ -28,7 +28,7 @@ class YOLOv2Layer(nn.Module):
         # Convert t_x and t_y --> x and y (ignoring the offset).
         x[:, :2] = torch.sigmoid(x[:, :2])
         # Add the offset.
-        offsets = torch.arange(0, int(x.shape[0] / in_shape[0]), device=self.device)
+        offsets = torch.arange(0, int(x.shape[0] / in_shape[0]), requires_grad=False, device=self.device)
         h_offsets = offsets / self.grid_size[0] / self.num_anchors
         v_offsets = (offsets - (h_offsets * self.grid_size[0] * self.num_anchors)) / self.num_anchors
         h_offsets = h_offsets.repeat(in_shape[0])
@@ -58,11 +58,9 @@ class Swish(nn.Module):
 
         # Parameters
         if learnable:
-            self.beta = nn.Parameter(beta * torch.ones(1))
-            self.beta.requires_grad = True
+            self.beta = beta * torch.ones(1, requires_grad=True)
         else:
             self.beta = beta
-            self.beta.requires_grad = False
 
     def forward(self, x):
         return x * torch.sigmoid(self.beta * x)
