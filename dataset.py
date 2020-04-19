@@ -260,12 +260,17 @@ class PascalDatasetYOLO(Dataset):
     def shuffle_images(self):
         random.shuffle(self.images)
 
-    def step(self):
+    def step(self, multi_scale=None):
+        if multi_scale is not None:
+            self.multi_scale = multi_scale
         self.shuffle_images()
         if self.multi_scale:
             size = (2 * np.random.randint(4, 10, self.n // (self.batch_size * MULTI_SCALE_FREQ) + 1) + 1)
             self.image_size = np.repeat(size * self.stride, 2 * self.batch_size * MULTI_SCALE_FREQ).reshape(-1, 2)
             self.grid_size = np.repeat(size, 2 * self.batch_size * MULTI_SCALE_FREQ).reshape(-1, 2)
+        else:
+            self.image_size = np.repeat(self.default_image_size, self.n).reshape(-1, 2)
+            self.grid_size = np.repeat([s // self.stride for s in self.default_image_size], self.n).reshape(-1, 2)
 
     def encode_categorical(self, name):
         y = self.classes.index(name)

@@ -121,17 +121,18 @@ class YOLOv2tiny(nn.Module):
                                                          torch.sqrt(targets[obj_mask, 2]))
             loss['coord'] += nn.MSELoss(reduction='sum')(torch.sqrt(predictions[obj_mask, 3]),
                                                          torch.sqrt(targets[obj_mask, 3]))
-            loss['coord'] *= LAMBDA_COORD / (4. * self.batch_size)
+            loss['coord'] *= LAMBDA_COORD / self.batch_size
 
             if self.iteration * self.batch_size < 12800:
-                loss['precoord'] = 0.1 / (4. * self.batch_size) * nn.MSELoss(reduction='sum')(predictions[noobj_mask, 0],
-                                                                                              targets[noobj_mask, 0])
-                loss['precoord'] += 0.1 / (4. * self.batch_size) * nn.MSELoss(reduction='sum')(predictions[noobj_mask, 1],
-                                                                                               targets[noobj_mask, 1])
-                loss['precoord'] += 0.1 / (4. * self.batch_size) * nn.MSELoss(reduction='sum')(torch.sqrt(predictions[noobj_mask, 2]),
-                                                                                               torch.sqrt(targets[noobj_mask, 2]))
-                loss['precoord'] += 0.1 / (4. * self.batch_size) * nn.MSELoss(reduction='sum')(torch.sqrt(predictions[noobj_mask, 3]),
-                                                                                               torch.sqrt(targets[noobj_mask, 3]))
+                loss['bias'] = nn.MSELoss(reduction='sum')(predictions[noobj_mask, 0],
+                                                           targets[noobj_mask, 0])
+                loss['bias'] += nn.MSELoss(reduction='sum')(predictions[noobj_mask, 1],
+                                                            targets[noobj_mask, 1])
+                loss['bias'] += nn.MSELoss(reduction='sum')(torch.sqrt(predictions[noobj_mask, 2]),
+                                                            torch.sqrt(targets[noobj_mask, 2]))
+                loss['bias'] += nn.MSELoss(reduction='sum')(torch.sqrt(predictions[noobj_mask, 3]),
+                                                            torch.sqrt(targets[noobj_mask, 3]))
+                loss['bias'] *= 0.1 / self.batch_size
 
             predictions[obj_mask, 5:] = F.log_softmax(predictions[obj_mask, 5:], dim=-1)
             targets_long = torch.argmax(targets[obj_mask, 5:], dim=1)
@@ -162,6 +163,16 @@ class YOLOv2tiny(nn.Module):
             loss['class'] = torch.tensor([0.], device=self.device)
             loss['no_object'] = LAMBDA_NOOBJ / self.batch_size * nn.MSELoss(reduction='sum')(predictions[:, 4],
                                                                                              targets[:, 4])
+            if self.iteration * self.batch_size < 12800:
+                loss['bias'] = nn.MSELoss(reduction='sum')(predictions[:, 0],
+                                                           targets[:, 0])
+                loss['bias'] += nn.MSELoss(reduction='sum')(predictions[:, 1],
+                                                            targets[:, 1])
+                loss['bias'] += nn.MSELoss(reduction='sum')(torch.sqrt(predictions[:, 2]),
+                                                            torch.sqrt(targets[:, 2]))
+                loss['bias'] += nn.MSELoss(reduction='sum')(torch.sqrt(predictions[:, 3]),
+                                                            torch.sqrt(targets[:, 3]))
+                loss['bias'] *= 0.1 / self.batch_size
 
         loss['total'] = (loss['coord'] + loss['class'] + loss['object'] + loss['no_object'])
 
@@ -193,7 +204,7 @@ class YOLOv2tiny(nn.Module):
         for epoch in range(1, epochs + 1):
             stats = {'avg_obj_iou': [], 'avg_class': [], 'avg_pobj': [], 'avg_pnoobj': []}
             batch_loss = []
-            if epoch == epochs:
+            if epoch % checkpoint_frequency == 0 or epoch == epochs:
                 train_data.disable_multiscale()
             with tqdm(total=len(train_dataloader),
                       desc='Epoch: [{}/{}]'.format(epoch, epochs),
@@ -208,7 +219,7 @@ class YOLOv2tiny(nn.Module):
                     loss, stats = self.loss(predictions, targets, stats)
                     batch_loss.append(loss['total'].item())
                     if self.iteration * self.batch_size < 12800:
-                        loss['total'] += loss['precoord']
+                        loss['total'] += loss['bias']
                     loss['total'].backward()
                     weights = np.arange(1, 1 + len(batch_loss))
                     disp_str = ' Training Loss: {:.6f}, '.format(np.average(batch_loss, weights=weights)) + \
@@ -226,7 +237,7 @@ class YOLOv2tiny(nn.Module):
                             self.iteration += 1
                     inner.update()
                 train_loss.append(np.average(batch_loss, weights=weights))
-            train_data.step()
+            train_data.step(self.multi_scale)
             if val_data is not None:
                 loss, val_stats = self.calculate_loss(val_data, val_data.batch_size, fraction=.1)
                 val_data.step()
@@ -246,15 +257,15 @@ class YOLOv2tiny(nn.Module):
                            ' Avg P|Obj: {:.4f},  '.format(np.average(stats['avg_pobj'], weights=weights)) + \
                            ' Avg P|Noobj: {:.4f},  '.format(np.average(stats['avg_pnoobj'], weights=weights)) + \
                            ' Avg Class: {:.4f}'.format(np.average(stats['avg_class'], weights=weights)) + \
-                inner.set_postfix_str(disp_str)
+                           inner.set_postfix_str(disp_str)
             # if val_data is not None:
             #     outer.set_postfix_str(' Training Loss: {:.6f},  Validation Loss: {:.6f}'.format(train_loss[-1],
             #                                                                                     val_loss[-1]))
             # else:
             #     outer.set_postfix_str(' Training Loss: {:.6f}'.format(train_loss[-1]))
             # outer.update()
-        if epoch % checkpoint_frequency == 0:
-            self.save_model(self.name + '_{}.pkl'.format(epoch))
+            if epoch % checkpoint_frequency == 0:
+                self.save_model(self.name + '_{}.pkl'.format(epoch))
 
         return train_loss, val_loss
 

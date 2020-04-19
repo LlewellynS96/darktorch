@@ -1,5 +1,5 @@
-import warnings
-warnings.filterwarnings("ignore")
+# import warnings
+# warnings.filterwarnings("ignore")
 
 import torchsummary
 from torch import optim
@@ -16,7 +16,7 @@ if __name__ == '__main__':
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     # device = 'cpu'
 
-    train = True
+    train = False
     freeze = False
     predict = True
 
@@ -63,9 +63,9 @@ if __name__ == '__main__':
 
     # model.load_weights('models/darknet.weights', only_imagenet=True)
     # model.load_weights('models/yolov2-tiny.conv.13', only_imagenet=True)
-    model.load_weights('models/yolov2-tiny-voc.weights')
+    # model.load_weights('models/yolov2-tiny-voc.weights')
     # model.load_weights('models/tiny-yolo-voc_final.weights')
-    # model = pickle.load(open('YOLOv2-tiny_90.pkl', 'rb'))
+    model = pickle.load(open('YOLOv2-tiny_60.pkl', 'rb'))
     # model.iteration = 90
     # model = model.to(device)
     # model.device = device
@@ -90,8 +90,8 @@ if __name__ == '__main__':
                   val_data=train_data,
                   optimizer=optimizer,
                   scheduler=scheduler,
-                  epochs=5,
-                  checkpoint_frequency=5)
+                  epochs=120,
+                  checkpoint_frequency=30)
 
         # model.save_weights('models/yolov2-tiny-voc-custom.weights')
         # pickle.dump(model, open('YOLOv2_tiny.pkl', 'wb'))
