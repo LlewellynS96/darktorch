@@ -119,23 +119,26 @@ class YOLOv2tiny(nn.Module):
             targets[mask, 4] = 1.
             noobj_mask = torch.nonzero(targets[:, 4] == 0.).squeeze()
 
+            anchors = self.anchors[obj_mask % 5]
             loss['coord'] = nn.MSELoss(reduction='sum')(predictions[obj_mask, 0], targets[obj_mask, 0])
             loss['coord'] += nn.MSELoss(reduction='sum')(predictions[obj_mask, 1], targets[obj_mask, 1])
-            loss['coord'] += nn.MSELoss(reduction='sum')(torch.sqrt(predictions[obj_mask, 2]),
-                                                         torch.sqrt(targets[obj_mask, 2]))
-            loss['coord'] += nn.MSELoss(reduction='sum')(torch.sqrt(predictions[obj_mask, 3]),
-                                                         torch.sqrt(targets[obj_mask, 3]))
+            loss['coord'] += nn.MSELoss(reduction='sum')(torch.log(predictions[obj_mask, 2] / anchors[:, 0]),
+                                                         targets[obj_mask, 2])
+            loss['coord'] += nn.MSELoss(reduction='sum')(torch.log(predictions[obj_mask, 3] / anchors[:, 1]),
+                                                         targets[obj_mask, 3])
             loss['coord'] *= LAMBDA_COORD / batch_size
 
             if self.iteration * self.batch_size < 12800:
+                anchors = self.anchors[noobj_mask % 5]
                 loss['bias'] = nn.MSELoss(reduction='sum')(predictions[noobj_mask, 0],
                                                            targets[noobj_mask, 0])
                 loss['bias'] += nn.MSELoss(reduction='sum')(predictions[noobj_mask, 1],
                                                             targets[noobj_mask, 1])
-                loss['bias'] += nn.MSELoss(reduction='sum')(torch.sqrt(predictions[noobj_mask, 2]),
-                                                            torch.sqrt(targets[noobj_mask, 2]))
-                loss['bias'] += nn.MSELoss(reduction='sum')(torch.sqrt(predictions[noobj_mask, 3]),
-                                                            torch.sqrt(targets[noobj_mask, 3]))
+                loss['bias'] += nn.MSELoss(reduction='sum')(torch.log(predictions[noobj_mask, 2] / anchors[:, 0]),
+                                                            targets[noobj_mask, 2])
+                loss['bias'] += nn.MSELoss(reduction='sum')(torch.log(predictions[noobj_mask, 3] / anchors[:, 1]),
+                                                            targets[noobj_mask, 3])
+
                 loss['bias'] *= 0.1 / batch_size
 
             predictions[obj_mask, 5:] = F.log_softmax(predictions[obj_mask, 5:], dim=-1)
@@ -166,7 +169,7 @@ class YOLOv2tiny(nn.Module):
             loss['coord'] = torch.tensor([0.], device=self.device)
             loss['class'] = torch.tensor([0.], device=self.device)
             loss['no_object'] = LAMBDA_NOOBJ / batch_size * nn.MSELoss(reduction='sum')(predictions[:, 4],
-                                                                                             targets[:, 4])
+                                                                                        targets[:, 4])
             if self.iteration * self.batch_size < 12800:
                 loss['bias'] = nn.MSELoss(reduction='sum')(predictions[:, 0],
                                                            targets[:, 0])

@@ -61,10 +61,10 @@ if __name__ == '__main__':
                                   )
 
     # model.load_weights('models/darknet.weights', only_imagenet=True)
-    model.load_weights('models/yolov2-tiny.conv.13', only_imagenet=True)
-    # model.load_weights('models/yolov2-tiny-voc.weights')
+    # model.load_weights('models/yolov2-tiny.conv.13', only_imagenet=True)
+    model.load_weights('models/yolov2-tiny-voc.weights')
     # model.load_weights('models/tiny-yolo-voc_final.weights')
-    # model = pickle.load(open('YOLOv2-tiny_ce.pkl', 'rb'))
+    # model = pickle.load(open('YOLOv2-tiny_120.pkl', 'rb'))
     # model.iteration = 90
     # model.device = device
     model = model.to(device)

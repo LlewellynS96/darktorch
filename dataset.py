@@ -98,6 +98,7 @@ class PascalDatasetYOLO(Dataset):
                             self.images.append((d, image_desc[0]))
 
         self.images = list(set(self.images))  # Remove duplicates.
+        self.images.sort()
 
         self.n = len(self.images)
 
@@ -224,8 +225,8 @@ class PascalDatasetYOLO(Dataset):
 
                 target[:, np.arange(self.grid_size[index][0]), 0::self.num_features] = np.arange(self.grid_size[index][0])[None, :, None] + 0.5
                 target[:, :, 1::self.num_features] = np.arange(self.grid_size[index][1])[:, None, None] + 0.5
-                target[:, :, 2::self.num_features] = anchors[:, 2]
-                target[:, :, 3::self.num_features] = anchors[:, 3]
+                target[:, :, 2::self.num_features] = 0.
+                target[:, :, 3::self.num_features] = 0.
 
                 anchors[:, 0::2] += xmin
                 anchors[:, 1::2] += ymin
@@ -233,10 +234,14 @@ class PascalDatasetYOLO(Dataset):
                 if ious.max() < IOU_MATCH_THRESHOLD:
                     continue
                 assign = np.argmax(ious)
+
+                anchors[assign, 2] -= xmin
+                anchors[assign, 3] -= ymin
+
                 target[idx[1], idx[0], assign * self.num_features + 0] = (xmin + xmax) / 2.
                 target[idx[1], idx[0], assign * self.num_features + 1] = (ymin + ymax) / 2.
-                target[idx[1], idx[0], assign * self.num_features + 2] = xmax - xmin
-                target[idx[1], idx[0], assign * self.num_features + 3] = ymax - ymin
+                target[idx[1], idx[0], assign * self.num_features + 2] = np.log((xmax - xmin) / anchors[assign, 2])
+                target[idx[1], idx[0], assign * self.num_features + 3] = np.log((ymax - ymin) / anchors[assign, 3])
                 target[idx[1], idx[0], assign * self.num_features + 4] = 1.
                 target[idx[1], idx[0], assign * self.num_features + 5:(assign + 1) * self.num_features] = \
                     self.encode_categorical(name)
