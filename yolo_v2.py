@@ -16,9 +16,10 @@ if __name__ == '__main__':
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     # device = 'cpu'
 
-    train = False
+    train = True
     freeze = False
     predict = True
+    fp16 = False
 
     model = YOLOv2tiny(name='YOLOv2-tiny',
                        model='models/yolov2-tiny-voc.cfg',
@@ -28,11 +29,9 @@ if __name__ == '__main__':
 
     train_data = PascalDatasetYOLO(root_dir=['../../../Data/VOCdevkit/VOC2007/',
                                              '../../../Data/VOCdevkit/VOC2012/'],
-                                   #  root_dir=['../../../Data/VOC/2007/'],
                                    class_file='../../../Data/VOCdevkit/voc.names',
                                    dataset=['trainval',
                                             'trainval'],
-                                   #  dataset=['train'],
                                    batch_size=model.batch_size // model.subdivisions,
                                    image_size=model.default_image_size,
                                    anchors=model.anchors,
@@ -62,18 +61,23 @@ if __name__ == '__main__':
                                   )
 
     # model.load_weights('models/darknet.weights', only_imagenet=True)
-    # model.load_weights('models/yolov2-tiny.conv.13', only_imagenet=True)
+    model.load_weights('models/yolov2-tiny.conv.13', only_imagenet=True)
     # model.load_weights('models/yolov2-tiny-voc.weights')
     # model.load_weights('models/tiny-yolo-voc_final.weights')
-    model = pickle.load(open('YOLOv2-tiny_60.pkl', 'rb'))
+    # model = pickle.load(open('YOLOv2-tiny_ce.pkl', 'rb'))
     # model.iteration = 90
-    # model = model.to(device)
     # model.device = device
+    model = model.to(device)
 
     if freeze:
         model.freeze(freeze_last_layer=False)
     else:
         model.unfreeze()
+
+    if fp16:
+        model.to_fp16()
+    else:
+        model.to_fp32()
 
     if train:
         set_random_seed(12345)

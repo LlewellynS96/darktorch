@@ -12,12 +12,12 @@ LAMBDA_OBJ = 1.
 LAMBDA_CLASS = 1.
 LAMBDA_NOOBJ = 1.
 
-USE_CROSS_ENTROPY = True
+USE_CROSS_ENTROPY = False
 
 
 class YOLOv2tiny(nn.Module):
 
-    def __init__(self, model, name='YOLOv2-tiny', device='cuda'):
+    def __init__(self, model, name='YOLOv2-tiny', fp16=False, device='cuda'):
 
         super(YOLOv2tiny, self).__init__()
 
@@ -60,11 +60,15 @@ class YOLOv2tiny(nn.Module):
 
         assert self.batch_size % self.subdivisions == 0, 'Subdivisions must be factor of batch size.'
 
-        self.subdivision_size = self.batch_size / float(self.subdivisions)
+        self.subdivision_size = self.batch_size / self.subdivisions
 
         self.iteration = 0
 
-        self.to(device)
+        self.fp16 = fp16
+        if fp16:
+            self.to_fp16()
+        else:
+            self.to_fp32()
 
     def forward(self, x):
 
@@ -121,7 +125,7 @@ class YOLOv2tiny(nn.Module):
                                                          torch.sqrt(targets[obj_mask, 2]))
             loss['coord'] += nn.MSELoss(reduction='sum')(torch.sqrt(predictions[obj_mask, 3]),
                                                          torch.sqrt(targets[obj_mask, 3]))
-            loss['coord'] *= LAMBDA_COORD / self.batch_size
+            loss['coord'] *= LAMBDA_COORD / batch_size
 
             if self.iteration * self.batch_size < 12800:
                 loss['bias'] = nn.MSELoss(reduction='sum')(predictions[noobj_mask, 0],
@@ -132,7 +136,7 @@ class YOLOv2tiny(nn.Module):
                                                             torch.sqrt(targets[noobj_mask, 2]))
                 loss['bias'] += nn.MSELoss(reduction='sum')(torch.sqrt(predictions[noobj_mask, 3]),
                                                             torch.sqrt(targets[noobj_mask, 3]))
-                loss['bias'] *= 0.1 / self.batch_size
+                loss['bias'] *= 0.1 / batch_size
 
             predictions[obj_mask, 5:] = F.log_softmax(predictions[obj_mask, 5:], dim=-1)
             targets_long = torch.argmax(targets[obj_mask, 5:], dim=1)
@@ -141,7 +145,7 @@ class YOLOv2tiny(nn.Module):
             else:
                 loss['class'] = nn.MSELoss(reduction='sum')(torch.exp(predictions[obj_mask, 5:]),
                                                             targets[obj_mask, 5:])
-            loss['class'] *= LAMBDA_CLASS / self.batch_size
+            loss['class'] *= LAMBDA_CLASS / batch_size
             stats['avg_class'].append(torch.exp(predictions[obj_mask, 5 + targets_long]).mean().item())
 
             if self.rescore:
@@ -150,18 +154,18 @@ class YOLOv2tiny(nn.Module):
             else:
                 loss['object'] = nn.MSELoss(reduction='sum')(predictions[obj_mask, 4],
                                                              targets[obj_mask, 4])
-            loss['object'] *= LAMBDA_OBJ / self.batch_size
+            loss['object'] *= LAMBDA_OBJ / batch_size
             stats['avg_pobj'].append(predictions[obj_mask, 4].mean().item())
 
             loss['no_object'] = nn.MSELoss(reduction='sum')(predictions[noobj_mask, 4],
                                                             targets[noobj_mask, 4])
-            loss['no_object'] *= LAMBDA_NOOBJ / self.batch_size
+            loss['no_object'] *= LAMBDA_NOOBJ / batch_size
             stats['avg_pnoobj'].append(predictions[noobj_mask, 4].mean().item())
         else:
             loss['object'] = torch.tensor([0.], device=self.device)
             loss['coord'] = torch.tensor([0.], device=self.device)
             loss['class'] = torch.tensor([0.], device=self.device)
-            loss['no_object'] = LAMBDA_NOOBJ / self.batch_size * nn.MSELoss(reduction='sum')(predictions[:, 4],
+            loss['no_object'] = LAMBDA_NOOBJ / batch_size * nn.MSELoss(reduction='sum')(predictions[:, 4],
                                                                                              targets[:, 4])
             if self.iteration * self.batch_size < 12800:
                 loss['bias'] = nn.MSELoss(reduction='sum')(predictions[:, 0],
@@ -172,7 +176,7 @@ class YOLOv2tiny(nn.Module):
                                                             torch.sqrt(targets[:, 2]))
                 loss['bias'] += nn.MSELoss(reduction='sum')(torch.sqrt(predictions[:, 3]),
                                                             torch.sqrt(targets[:, 3]))
-                loss['bias'] *= 0.1 / self.batch_size
+                loss['bias'] *= 0.1 / batch_size
 
         loss['total'] = (loss['coord'] + loss['class'] + loss['object'] + loss['no_object'])
 
@@ -211,6 +215,9 @@ class YOLOv2tiny(nn.Module):
                       leave=True,
                       unit='batches') as inner:
                 for images, _, targets in train_dataloader:
+                    if self.fp16:
+                        images = images.half()
+                        targets = targets.half()
                     images = images.to(self.device)
                     targets = targets.to(self.device)
                     if inner.n % self.subdivisions == 0:
@@ -809,3 +816,17 @@ class YOLOv2tiny(nn.Module):
                 trainable_parameters.append(param)
 
         return trainable_parameters
+
+    def to_fp16(self):
+        self.fp16 = True
+        self.half()
+        for seq in self.layers:
+            for layer in seq:
+                if isinstance(layer, nn.BatchNorm2d):
+                    layer.float()
+        self.to(self.device)
+
+    def to_fp32(self):
+        self.fp16 = False
+        self.float()
+        self.to(self.device)

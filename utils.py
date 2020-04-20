@@ -116,6 +116,7 @@ def jaccard(boxes_a, boxes_b):
     area_a = torch.clamp(area_a, min=0)
 
     ious = area_i / (area_a[:, None] + area_b - area_i)
+    ious[torch.isnan(ious)] = 0.
 
     return ious
 
