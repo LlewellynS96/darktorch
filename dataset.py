@@ -5,7 +5,7 @@ import numpy as np
 from torch.utils.data import Dataset
 from PIL import Image, ImageOps, ImageFilter
 import torchvision.transforms
-from utils import jaccard, read_classes, get_annotations, get_letterbox_padding
+from utils import jaccard, read_classes, get_annotations, get_letterbox_padding, to_numpy_image, add_bbox_to_image
 
 
 USE_LETTERBOX = False
@@ -183,6 +183,16 @@ class PascalDatasetYOLO(Dataset):
                               dtype=np.float32)
             cell_dims = self.image_size[index, 1] / self.grid_size[index, 1], \
                         self.image_size[index, 0] / self.grid_size[index, 0]
+
+            # anchors = torch.zeros((self.num_anchors, 4))
+            # anchors[:, 2:] = self.anchors.clone()
+            #
+            # target[:, np.arange(self.grid_size[index][0]), 0::self.num_features] = np.arange(self.grid_size[index][0])[
+            #                                                                        None, :, None] + 0.5
+            # target[:, :, 1::self.num_features] = np.arange(self.grid_size[index][1])[:, None, None] + 0.5
+            # target[:, :, 2::self.num_features] = anchors[:, 2]
+            # target[:, :, 3::self.num_features] = anchors[:, 3]
+
             # For each object in image.
             for annotation in annotations:
                 name, height, width, xmin, ymin, xmax, ymax, truncated, difficult = annotation
@@ -215,18 +225,13 @@ class PascalDatasetYOLO(Dataset):
                 xmax /= cell_dims[0]
                 ymin /= cell_dims[1]
                 ymax /= cell_dims[1]
-                if xmax - xmin < SMALL_THRESHOLD or ymax - ymin < SMALL_THRESHOLD:
+                if xmax - xmin < (SMALL_THRESHOLD * cell_dims[0]) or ymax - ymin < (SMALL_THRESHOLD * cell_dims[1]):
                     continue
                 idx = int(np.floor((xmax + xmin) / 2.)), int(np.floor((ymax + ymin) / 2.))
 
                 ground_truth = torch.tensor([[xmin, ymin, xmax, ymax]], dtype=torch.float32)
                 anchors = torch.zeros((self.num_anchors, 4))
                 anchors[:, 2:] = self.anchors.clone()
-
-                target[:, np.arange(self.grid_size[index][0]), 0::self.num_features] = np.arange(self.grid_size[index][0])[None, :, None] + 0.5
-                target[:, :, 1::self.num_features] = np.arange(self.grid_size[index][1])[:, None, None] + 0.5
-                target[:, :, 2::self.num_features] = 0.
-                target[:, :, 3::self.num_features] = 0.
 
                 anchors[:, 0::2] += xmin
                 anchors[:, 1::2] += ymin
@@ -235,13 +240,10 @@ class PascalDatasetYOLO(Dataset):
                     continue
                 assign = np.argmax(ious)
 
-                anchors[assign, 2] -= xmin
-                anchors[assign, 3] -= ymin
-
                 target[idx[1], idx[0], assign * self.num_features + 0] = (xmin + xmax) / 2.
                 target[idx[1], idx[0], assign * self.num_features + 1] = (ymin + ymax) / 2.
-                target[idx[1], idx[0], assign * self.num_features + 2] = np.log((xmax - xmin) / anchors[assign, 2])
-                target[idx[1], idx[0], assign * self.num_features + 3] = np.log((ymax - ymin) / anchors[assign, 3])
+                target[idx[1], idx[0], assign * self.num_features + 2] = xmax - xmin
+                target[idx[1], idx[0], assign * self.num_features + 3] = ymax - ymin
                 target[idx[1], idx[0], assign * self.num_features + 4] = 1.
                 target[idx[1], idx[0], assign * self.num_features + 5:(assign + 1) * self.num_features] = \
                     self.encode_categorical(name)
@@ -249,7 +251,6 @@ class PascalDatasetYOLO(Dataset):
             target = torch.tensor(target)
             target = target.permute(2, 0, 1)
 
-        if self.return_targets:
             return image, image_info, target
         else:
             return image, image_info

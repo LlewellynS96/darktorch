@@ -7,7 +7,7 @@ import xml.etree.ElementTree as Et
 from functools import reduce
 
 
-NUM_WORKERS = 8
+NUM_WORKERS = 0
 
 
 # Original author: Francisco Massa:
@@ -113,7 +113,7 @@ def jaccard(boxes_a, boxes_b):
     en = (tl < br).type(tl.type()).prod(dim=2)
     area_i = torch.prod(br - tl, 2) * en
 
-    area_a = torch.clamp(area_a, min=0)
+    # area_a = torch.clamp(area_a, min=0)
 
     ious = area_i / (area_a[:, None] + area_b - area_i)
     ious[torch.isnan(ious)] = 0.
@@ -226,7 +226,7 @@ def to_numpy_image(image, size):
         A ndarray representation of the image.
 
     """
-    image = image.permute(1, 2, 0).cpu().numpy()
+    image = image.clone().permute(1, 2, 0).cpu().numpy()
     image *= 255.
     image = image.astype(dtype=np.uint8)
     image = cv2.resize(image, dsize=size, interpolation=cv2.INTER_CUBIC)

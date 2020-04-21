@@ -16,7 +16,7 @@ if __name__ == '__main__':
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     # device = 'cpu'
 
-    train = True
+    train = False
     freeze = False
     predict = True
     fp16 = False
@@ -52,17 +52,17 @@ if __name__ == '__main__':
     test_data = PascalDatasetYOLO(root_dir='../../../Data/VOCdevkit/VOC2007/',
                                   class_file='../../../Data/VOCdevkit/voc.names',
                                   dataset='test',
-                                  batch_size=model.batch_size // model.subdivisions,
+                                  batch_size=1, #model.batch_size // model.subdivisions,
                                   image_size=model.default_image_size,
                                   anchors=model.anchors,
-                                  do_transforms=False,
-                                  multi_scale=False,
-                                  return_targets=False
+                                  do_transforms=True,
+                                  multi_scale=True,
+                                  return_targets=True
                                   )
 
     # model.load_weights('models/darknet.weights', only_imagenet=True)
-    # model.load_weights('models/yolov2-tiny.conv.13', only_imagenet=True)
-    model.load_weights('models/yolov2-tiny-voc.weights')
+    model.load_weights('models/yolov2-tiny.conv.13', only_imagenet=True)
+    # model.load_weights('models/yolov2-tiny-voc.weights')
     # model.load_weights('models/tiny-yolo-voc_final.weights')
     # model = pickle.load(open('YOLOv2-tiny_120.pkl', 'rb'))
     # model.iteration = 90
@@ -106,6 +106,6 @@ if __name__ == '__main__':
         model.predict(dataset=test_data,
                       confidence_threshold=0.001,
                       overlap_threshold=.45,
-                      show=False,
+                      show=True,
                       export=True
                       )

@@ -94,10 +94,10 @@ class YOLOv2tiny(nn.Module):
         targets = targets.contiguous().view(batch_size, -1, self.num_features)
         predictions = predictions.contiguous().view(batch_size, -1, self.num_features)
 
-        img_idx = torch.arange(batch_size, dtype=torch.float, device=self.device).reshape(-1, 1) * self.grid_size[0]
+        img_idx = torch.arange(batch_size, dtype=targets.dtype, device=self.device).reshape(-1, 1) * self.grid_size[0]
         targets[:, :, 0] += 2. * img_idx
         predictions[:, :, 0] += 2. * img_idx
-        img_idx = torch.arange(batch_size, dtype=torch.float, device=self.device).reshape(-1, 1) * self.grid_size[1]
+        img_idx = torch.arange(batch_size, dtype=targets.dtype, device=self.device).reshape(-1, 1) * self.grid_size[1]
         targets[:, :, 1] += 2. * img_idx
         predictions[:, :, 1] += 2. * img_idx
 
@@ -119,25 +119,25 @@ class YOLOv2tiny(nn.Module):
             targets[mask, 4] = 1.
             noobj_mask = torch.nonzero(targets[:, 4] == 0.).squeeze()
 
-            anchors = self.anchors[obj_mask % 5]
+            # anchors = self.anchors[obj_mask % 5]
             loss['coord'] = nn.MSELoss(reduction='sum')(predictions[obj_mask, 0], targets[obj_mask, 0])
             loss['coord'] += nn.MSELoss(reduction='sum')(predictions[obj_mask, 1], targets[obj_mask, 1])
-            loss['coord'] += nn.MSELoss(reduction='sum')(torch.log(predictions[obj_mask, 2] / anchors[:, 0]),
-                                                         targets[obj_mask, 2])
-            loss['coord'] += nn.MSELoss(reduction='sum')(torch.log(predictions[obj_mask, 3] / anchors[:, 1]),
-                                                         targets[obj_mask, 3])
+            loss['coord'] += nn.MSELoss(reduction='sum')(torch.sqrt(predictions[obj_mask, 2]),
+                                                         torch.sqrt(targets[obj_mask, 2]))
+            loss['coord'] += nn.MSELoss(reduction='sum')(torch.sqrt(predictions[obj_mask, 3]),
+                                                         torch.sqrt(targets[obj_mask, 3]))
             loss['coord'] *= LAMBDA_COORD / batch_size
 
             if self.iteration * self.batch_size < 12800:
-                anchors = self.anchors[noobj_mask % 5]
+                # anchors = self.anchors[noobj_mask % 5]
                 loss['bias'] = nn.MSELoss(reduction='sum')(predictions[noobj_mask, 0],
                                                            targets[noobj_mask, 0])
                 loss['bias'] += nn.MSELoss(reduction='sum')(predictions[noobj_mask, 1],
                                                             targets[noobj_mask, 1])
-                loss['bias'] += nn.MSELoss(reduction='sum')(torch.log(predictions[noobj_mask, 2] / anchors[:, 0]),
-                                                            targets[noobj_mask, 2])
-                loss['bias'] += nn.MSELoss(reduction='sum')(torch.log(predictions[noobj_mask, 3] / anchors[:, 1]),
-                                                            targets[noobj_mask, 3])
+                loss['bias'] += nn.MSELoss(reduction='sum')(torch.sqrt(predictions[noobj_mask, 2]),
+                                                             torch.sqrt(targets[noobj_mask, 2]))
+                loss['bias'] += nn.MSELoss(reduction='sum')(torch.sqrt(predictions[noobj_mask, 3]),
+                                                             torch.sqrt(targets[noobj_mask, 3]))
 
                 loss['bias'] *= 0.1 / batch_size
 
@@ -723,11 +723,11 @@ class YOLOv2tiny(nn.Module):
             with tqdm(total=len(dataloader),
                       desc='Exporting',
                       leave=True) as pbar:
-                # for images, image_info, targets in dataloader:
-                for images, image_info in dataloader:
+                for images, image_info, targets in dataloader:
+                # for images, image_info in dataloader:
                     images = images.to(self.device)
                     predictions = self(images)
-                    # predictions = targets
+                    predictions = targets
                     bboxes, classes, confidences, image_idx = self.process_bboxes(predictions,
                                                                                   image_info,
                                                                                   confidence_threshold,
@@ -823,13 +823,19 @@ class YOLOv2tiny(nn.Module):
     def to_fp16(self):
         self.fp16 = True
         self.half()
+        self.anchors = self.anchors.half()
         for seq in self.layers:
             for layer in seq:
                 if isinstance(layer, nn.BatchNorm2d):
-                    layer.float()
+                    layer = layer.float()
+        for layer in self.detection_layers:
+            layer = layer.anchors.half()
         self.to(self.device)
 
     def to_fp32(self):
         self.fp16 = False
         self.float()
+        self.anchors = self.anchors.float()
+        for layer in self.detection_layers:
+            layer.anchors = layer.anchors.float()
         self.to(self.device)
