@@ -33,8 +33,8 @@ class YOLOv2Layer(nn.Module):
         v_offsets = (offsets - (h_offsets * self.grid_size[0] * self.num_anchors)) / self.num_anchors
         h_offsets = h_offsets.repeat(in_shape[0])
         v_offsets = v_offsets.repeat(in_shape[0])
-        x[:, 0] += h_offsets.to(x)
-        x[:, 1] += v_offsets.to(x)
+        x[:, 0] += h_offsets.float()
+        x[:, 1] += v_offsets.float()
 
         # Convert t_w and t_h --> w and h.
         anchors = self.anchors.repeat(in_shape[0] * self.grid_size[0] * self.grid_size[1], 1)

@@ -5,6 +5,7 @@ import cv2
 import os
 import xml.etree.ElementTree as Et
 from functools import reduce
+from matplotlib import cm
 
 
 NUM_WORKERS = 0
@@ -209,44 +210,56 @@ def read_classes(file) -> list:
     return classes
 
 
-def to_numpy_image(image, size):
+def to_numpy_image(image, size, mu=0., sigma=1., normalised=True):
     """
-    A utility function that converts a Tensor in the range [0., 1.] to a
-    resized ndarray in the range [0, 255].
+    Converts a Tensor in the range [0., 1.] to a resized
+    Numpy array in the range [0, 255].
     Parameters
     ----------
     image : Tensor
         A Tensor representing the image.
     size : tuple of int
         The size (w, h) to which the image should be resized.
-
+    normalize : bool
+        A flag which indicates whether the image was originally normalized,
+        which means that it should be "de-normalized" when converting to an
+        array.
     Returns
     -------
     image : ndarray
-        A ndarray representation of the image.
-
+        A Numpy array representation of the image.
     """
-    image = image.clone().permute(1, 2, 0).cpu().numpy()
+    if image.ndim == 2:
+        image = image[None]
+    if isinstance(image, torch.Tensor):
+        image = np.array(image.permute(1, 2, 0).cpu().numpy())
+    image *= np.array(sigma)
+    image += np.array(mu)
+    if not normalised:
+        image -= np.min(image)
+        image /= np.max(image)
+    if image.shape[2] == 1:
+        image = cm.get_cmap('viridis')(image)[:, :, 0, :3]
     image *= 255.
     image = image.astype(dtype=np.uint8)
     image = cv2.resize(image, dsize=size, interpolation=cv2.INTER_CUBIC)
-    image = np.array(image)
 
     return image
 
 
-def add_bbox_to_image(image, bbox, confidence, cls):
+def add_bbox_to_image(image, bbox, confidence, cls, thickness=3, color=None):
     """
-    A utility function that adds a bounding box with labels to an image in-place.
+    Adds a visual bounding box with labels to an image in-place.
 
     Parameters
     ----------
     image : ndarray
-        An ndarray containing the image.
+        A Numpy array containing the image.
     bbox : array_like
         An array (x1, y1, x2, y2) containing the coordinates of the upper-
         left and bottom-right corners of the bounding box to be added to
-        the image.
+        the image. The coordinates should be normalized to the width and
+        the height of the image.
     confidence : float
         A value representing the confidence of an object within the bounding
         box. This value will be displayed as part of the label.
@@ -254,23 +267,26 @@ def add_bbox_to_image(image, bbox, confidence, cls):
         The class to which the object in the bounding box belongs. This
         value will be displayed as part of the label.
     """
-    text = '{} {:.2f}'.format(cls, confidence)
-    # text = '{}'.format(cls)
+    if confidence is not None:
+        text = '{} {:.2f}'.format(cls, confidence)
+    else:
+        text = '{}'.format(cls)
     xmin, ymin, xmax, ymax = bbox
     # Draw a bounding box.
-    color = np.random.uniform(0., 255., size=3)
-    cv2.rectangle(image, (xmin, ymax), (xmax, ymin), color, 3)
+    if color is None:
+        color = np.random.uniform(0., 255., size=3)
+    cv2.rectangle(image, (xmin, ymax), (xmax, ymin), color, thickness)
 
     # Display the label at the top of the bounding box
     label_size, base_line = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
     ymax = max(ymax, label_size[1])
     cv2.rectangle(image,
-                  (xmin, ymax - round(1.5 * label_size[1])),
+                  (xmin, ymax),
                   (xmin + round(1.5 * label_size[0]),
-                   ymax + base_line),
+                   ymax + base_line + round(1.5 * label_size[1])),
                   color,
                   cv2.FILLED)
-    cv2.putText(image, text, (xmin, ymax), cv2.FONT_HERSHEY_SIMPLEX, 0.75, [255] * 3, 1)
+    cv2.putText(image, text, (xmin, ymax + round(1.5 * label_size[1])), cv2.FONT_HERSHEY_SIMPLEX, 0.75, [255] * 3, 1)
 
 
 def export_prediction(cls, image_id, top, left, bottom, right, confidence,
@@ -318,10 +334,6 @@ def export_prediction(cls, image_id, top, left, bottom, right, confidence,
     filename = os.path.join(directory, filename)
 
     with open(filename, 'a') as f:
-        top = np.maximum(top, 1.)
-        left = np.maximum(left, 1.)
-        bottom = np.maximum(bottom, 1.)
-        right = np.maximum(right, 1.)
         prediction = [image_id, confidence, np.round(left), np.round(top), np.round(right), np.round(bottom), '\n']
         prediction = map(to_repr, prediction)
         prediction = ' '.join(prediction)
@@ -375,7 +387,7 @@ def get_annotations(annotations_dir, img):
     return annotations
 
 
-def find_best_anchors(classes, root_dir, dataset, k=5, max_iter=20, skip_truncated=True, weighted=True, device='cuda'):
+def find_best_anchors(classes, root_dir, dataset, k=5, max_iter=20, skip_truncated=True, init=13, weighted=True, device='cuda'):
 
     annotations_dir = [os.path.join(r, 'Annotations') for r in root_dir]
     sets_dir = [os.path.join(r, 'ImageSets', 'Main') for r in root_dir]
@@ -406,7 +418,7 @@ def find_best_anchors(classes, root_dir, dataset, k=5, max_iter=20, skip_truncat
                 bboxes.append([0., 0., i * width, i * height])
 
     bboxes = torch.tensor(bboxes, device=device)
-    anchors = torch.tensor(([0., 0., 13., 13.] * np.random.random((k, 4))).astype(dtype=np.float32), device=device)
+    anchors = torch.tensor(([0., 0., init, init] * np.random.random((k, 4))).astype(dtype=np.float32), device=device)
 
     for _ in range(max_iter):
         ious = jaccard(bboxes, anchors)
@@ -425,14 +437,14 @@ def find_best_anchors(classes, root_dir, dataset, k=5, max_iter=20, skip_truncat
     return anchors[:, 2:]
 
 
-def get_letterbox_padding(old_size, desired_size):
-    ratio = min([float(d) / max(old_size) for d in desired_size])
-    new_size = np.array([dim * ratio for dim in old_size], dtype=np.int)
+def get_letterbox_padding(size, desired_size):
+    scale = min([float(dim) / max(size) for dim in desired_size])
+    new_size = np.array([dim * scale for dim in size], dtype=np.int)
 
     delta = desired_size - new_size
     padding = (delta[0] // 2, delta[1] // 2, delta[0] - (delta[0] // 2), delta[1] - (delta[1] // 2))
 
-    return [ratio] * 2, padding
+    return [scale] * 2, padding
 
 
 def exponential_decay_scheduler(optimizer, initial_lr=None, warm_up=1, decay=0.05):
@@ -527,12 +539,22 @@ def main():
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
     classes = read_classes('../../../Data/VOCdevkit/voc.names')
+    # a = find_best_anchors(classes,
+    #                       k=5,
+    #                       max_iter=1000,
+    #                       root_dir=['../../../Data/VOCdevkit/VOC2007/', '../../../Data/VOCdevkit/VOC2012/'],
+    #                       dataset=['trainval'] * 2,
+    #                       skip_truncated=False,
+    #                       weighted=True,
+    #                       device=device)
+    classes = read_classes('../../../Data/SS/ss.names')
     a = find_best_anchors(classes,
                           k=5,
                           max_iter=1000,
-                          root_dir=['../../../Data/VOCdevkit/VOC2007/', '../../../Data/VOCdevkit/VOC2012/'],
-                          dataset=['trainval'] * 2,
+                          root_dir=['../../../Data/SS/'],
+                          dataset=['train'],
                           skip_truncated=False,
+                          init=3.,
                           weighted=True,
                           device=device)
 

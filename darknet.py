@@ -6,6 +6,7 @@ from tqdm import tqdm
 from utils import NUM_WORKERS
 from utils import jaccard, xywh2xyxy, non_maximum_suppression, to_numpy_image, add_bbox_to_image, export_prediction
 from layers import *
+from time import time
 
 LAMBDA_COORD = 5.
 LAMBDA_OBJ = 1.
@@ -17,7 +18,7 @@ USE_CROSS_ENTROPY = False
 
 class YOLOv2tiny(nn.Module):
 
-    def __init__(self, model, name='YOLOv2-tiny', fp16=False, device='cuda'):
+    def __init__(self, model, name='YOLOv2-tiny', device='cuda'):
 
         super(YOLOv2tiny, self).__init__()
 
@@ -64,11 +65,15 @@ class YOLOv2tiny(nn.Module):
 
         self.iteration = 0
 
-        self.fp16 = fp16
-        if fp16:
-            self.to_fp16()
-        else:
-            self.to_fp32()
+        self.to(device)
+
+    def set_input_dims(self, dims=3):
+        conv = self.layers[0][0]
+        assert dims <= conv.weight.data.shape[1]
+        self.layers[0][0] = nn.Conv2d(dims, 16, kernel_size=3, stride=1, padding=1, bias=False)
+        self.layers[0][0].weight.data.copy_(conv.weight.data[:, :dims])
+        self.to(self.device)
+        self.channels = dims
 
     def forward(self, x):
 
@@ -94,10 +99,10 @@ class YOLOv2tiny(nn.Module):
         targets = targets.contiguous().view(batch_size, -1, self.num_features)
         predictions = predictions.contiguous().view(batch_size, -1, self.num_features)
 
-        img_idx = torch.arange(batch_size, dtype=targets.dtype, device=self.device).reshape(-1, 1) * self.grid_size[0]
+        img_idx = torch.arange(batch_size, dtype=torch.float, device=self.device).reshape(-1, 1) * self.grid_size[0]
         targets[:, :, 0] += 2. * img_idx
         predictions[:, :, 0] += 2. * img_idx
-        img_idx = torch.arange(batch_size, dtype=targets.dtype, device=self.device).reshape(-1, 1) * self.grid_size[1]
+        img_idx = torch.arange(batch_size, dtype=torch.float, device=self.device).reshape(-1, 1) * self.grid_size[1]
         targets[:, :, 1] += 2. * img_idx
         predictions[:, :, 1] += 2. * img_idx
 
@@ -135,9 +140,9 @@ class YOLOv2tiny(nn.Module):
                 loss['bias'] += nn.MSELoss(reduction='sum')(predictions[noobj_mask, 1],
                                                             targets[noobj_mask, 1])
                 loss['bias'] += nn.MSELoss(reduction='sum')(torch.sqrt(predictions[noobj_mask, 2]),
-                                                             torch.sqrt(targets[noobj_mask, 2]))
+                                                            torch.sqrt(targets[noobj_mask, 2]))
                 loss['bias'] += nn.MSELoss(reduction='sum')(torch.sqrt(predictions[noobj_mask, 3]),
-                                                             torch.sqrt(targets[noobj_mask, 3]))
+                                                            torch.sqrt(targets[noobj_mask, 3]))
 
                 loss['bias'] *= 0.1 / batch_size
 
@@ -197,8 +202,18 @@ class YOLOv2tiny(nn.Module):
                                       batch_size=train_data.batch_size,
                                       num_workers=NUM_WORKERS)
 
-        train_loss = []
-        val_loss = []
+        all_train_loss = []
+        all_train_stats = []
+        all_val_loss = []
+        all_val_stats = []
+
+        if val_data is not None:
+            self.eval()
+            loss, val_stats = self.calculate_loss(val_data, val_data.batch_size, fraction=.5)
+            self.train()
+            val_data.step()
+            all_val_loss.append(loss)
+            all_val_stats.append(val_stats)
 
         # ==========================================================
         # PyCharm does not support nested tqdm progress bars, and
@@ -209,7 +224,8 @@ class YOLOv2tiny(nn.Module):
         #           leave=True,
         #           unit='batches') as outer:
         for epoch in range(1, epochs + 1):
-            stats = {'avg_obj_iou': [], 'avg_class': [], 'avg_pobj': [], 'avg_pnoobj': []}
+            batch_stats = {'avg_obj_iou': [], 'avg_class': [], 'avg_pobj': [], 'avg_pnoobj': []}
+            val_stats = {'avg_obj_iou': [], 'avg_class': [], 'avg_pobj': [], 'avg_pnoobj': []}
             batch_loss = []
             if epoch % checkpoint_frequency == 0 or epoch == epochs:
                 train_data.disable_multiscale()
@@ -218,25 +234,22 @@ class YOLOv2tiny(nn.Module):
                       leave=True,
                       unit='batches') as inner:
                 for images, _, targets in train_dataloader:
-                    if self.fp16:
-                        images = images.half()
-                        targets = targets.half()
                     images = images.to(self.device)
                     targets = targets.to(self.device)
                     if inner.n % self.subdivisions == 0:
                         optimizer.zero_grad()
                     predictions = self(images)
-                    loss, stats = self.loss(predictions, targets, stats)
+                    loss, batch_stats = self.loss(predictions, targets, batch_stats)
                     batch_loss.append(loss['total'].item())
                     if self.iteration * self.batch_size < 12800:
                         loss['total'] += loss['bias']
                     loss['total'].backward()
                     weights = np.arange(1, 1 + len(batch_loss))
                     disp_str = ' Training Loss: {:.6f}, '.format(np.average(batch_loss, weights=weights)) + \
-                               ' Avg IOU: {:.4f},  '.format(np.average(stats['avg_obj_iou'], weights=weights)) + \
-                               ' Avg P|Obj: {:.4f},  '.format(np.average(stats['avg_pobj'], weights=weights)) + \
-                               ' Avg P|Noobj: {:.4f},  '.format(np.average(stats['avg_pnoobj'], weights=weights)) + \
-                               ' Avg Class: {:.4f}, '.format(np.average(stats['avg_class'], weights=weights)) + \
+                               ' Avg IOU: {:.4f},  '.format(np.average(batch_stats['avg_obj_iou'], weights=weights)) + \
+                               ' Avg P|Obj: {:.4f},  '.format(np.average(batch_stats['avg_pobj'], weights=weights)) + \
+                               ' Avg P|Noobj: {:.4f},  '.format(np.average(batch_stats['avg_pnoobj'], weights=weights)) + \
+                               ' Avg Class: {:.4f}, '.format(np.average(batch_stats['avg_class'], weights=weights)) + \
                                ' Iteration: {:d}'.format(self.iteration)
                     inner.set_postfix_str(disp_str)
                     torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=1., norm_type='inf')
@@ -244,30 +257,34 @@ class YOLOv2tiny(nn.Module):
                         optimizer.step()
                         if scheduler is not None:
                             scheduler.step()
-                            self.iteration += 1
+                        self.iteration += 1
                     inner.update()
-                train_loss.append(np.average(batch_loss, weights=weights))
+                all_train_loss.append(batch_loss)
+                all_train_stats.append(batch_stats)
             train_data.step(self.multi_scale)
             if val_data is not None:
-                loss, val_stats = self.calculate_loss(val_data, val_data.batch_size, fraction=.1)
+                self.eval()
+                loss, val_stats = self.calculate_loss(val_data, val_data.batch_size, val_stats, fraction=.5)
+                self.train()
                 val_data.step()
-                val_loss.append(loss)
-                disp_str = ' Training Loss: {:.6f}, '.format(train_loss[-1]) + \
-                           ' Avg IOU: {:.4f},  '.format(np.average(stats['avg_obj_iou'], weights=weights)) + \
-                           ' Avg P|Obj: {:.4f},  '.format(np.average(stats['avg_pobj'], weights=weights)) + \
-                           ' Avg P|Noobj: {:.4f},  '.format(np.average(stats['avg_pnoobj'], weights=weights)) + \
-                           ' Avg Class: {:.4f}, '.format(np.average(stats['avg_class'], weights=weights)) + \
-                           ' Validation Loss: {:.6f}'.format(val_loss[-1])
+                all_val_loss.append(loss)
+                all_val_stats.append(val_stats)
+                disp_str = ' Training Loss: {:.6f}, '.format(np.average(batch_loss, weights=weights)) + \
+                           ' Avg IOU: {:.4f},  '.format(np.average(batch_stats['avg_obj_iou'], weights=weights)) + \
+                           ' Avg P|Obj: {:.4f},  '.format(np.average(batch_stats['avg_pobj'], weights=weights)) + \
+                           ' Avg P|Noobj: {:.4f},  '.format(np.average(batch_stats['avg_pnoobj'], weights=weights)) + \
+                           ' Avg Class: {:.4f}, '.format(np.average(batch_stats['avg_class'], weights=weights)) + \
+                           ' Validation Loss: {:.6f}'.format(all_val_loss[-1])
                 inner.set_postfix_str(disp_str)
                 with open('training_loss.txt', 'a') as fl:
                     fl.writelines('Epoch: {} '.format(epoch) + disp_str + '\n')
             else:
-                disp_str = ' Training Loss: {:.6f}, '.format(train_loss[-1]) + \
-                           ' Avg IOU: {:.4f},  '.format(np.average(stats['avg_obj_iou'], weights=weights)) + \
-                           ' Avg P|Obj: {:.4f},  '.format(np.average(stats['avg_pobj'], weights=weights)) + \
-                           ' Avg P|Noobj: {:.4f},  '.format(np.average(stats['avg_pnoobj'], weights=weights)) + \
-                           ' Avg Class: {:.4f}'.format(np.average(stats['avg_class'], weights=weights)) + \
-                           inner.set_postfix_str(disp_str)
+                disp_str = ' Training Loss: {:.6f}, '.format(np.average(batch_loss, weights=weights)) + \
+                           ' Avg IOU: {:.4f},  '.format(np.average(batch_stats['avg_obj_iou'], weights=weights)) + \
+                           ' Avg P|Obj: {:.4f},  '.format(np.average(batch_stats['avg_pobj'], weights=weights)) + \
+                           ' Avg P|Noobj: {:.4f},  '.format(np.average(batch_stats['avg_pnoobj'], weights=weights)) + \
+                           ' Avg Class: {:.4f}'.format(np.average(batch_stats['avg_class'], weights=weights))
+                inner.set_postfix_str(disp_str)
             # if val_data is not None:
             #     outer.set_postfix_str(' Training Loss: {:.6f},  Validation Loss: {:.6f}'.format(train_loss[-1],
             #                                                                                     val_loss[-1]))
@@ -277,7 +294,7 @@ class YOLOv2tiny(nn.Module):
             if epoch % checkpoint_frequency == 0:
                 self.save_model(self.name + '_{}.pkl'.format(epoch))
 
-        return train_loss, val_loss
+        return all_train_loss, all_train_stats, all_val_loss, all_val_stats
 
     def set_grid_size(self, x, y):
 
@@ -300,7 +317,7 @@ class YOLOv2tiny(nn.Module):
         """
         pickle.dump(self, open(name, 'wb'), protocol=pickle.HIGHEST_PROTOCOL)
 
-    def calculate_loss(self, data, batch_size, fraction=0.1):
+    def calculate_loss(self, data, batch_size, stats=None, fraction=0.1):
         """
         Calculates the loss for a random partition of a given dataset without
         tracking gradients. Useful for displaying the validation loss during
@@ -327,7 +344,8 @@ class YOLOv2tiny(nn.Module):
                                     num_workers=NUM_WORKERS)
 
         losses = []
-        stats = {'avg_obj_iou': [], 'avg_class': [], 'avg_pobj': [], 'avg_pnoobj': []}
+        if stats is None:
+            stats = {'avg_obj_iou': [], 'avg_class': [], 'avg_pobj': [], 'avg_pnoobj': []}
 
         with torch.no_grad():
             for i, (images, _, targets) in enumerate(val_dataloader, 1):
@@ -663,9 +681,8 @@ class YOLOv2tiny(nn.Module):
                 continue
 
             bboxes = prediction[mask, :4].clone()
-            cell_dims = self.image_size[1] / self.grid_size[1], self.image_size[0] / self.grid_size[0]
-            bboxes[:, ::2] *= cell_dims[0]
-            bboxes[:, 1::2] *= cell_dims[1]
+            bboxes[:, ::2] *= self.stride
+            bboxes[:, 1::2] *= self.stride
             bboxes = xywh2xyxy(bboxes)
 
             confidence = confidence[mask]
@@ -686,18 +703,18 @@ class YOLOv2tiny(nn.Module):
                     bboxes_.append(bboxes[cls_mask][mask])
                     confidence_.append(confidence[cls_mask][mask])
                     classes_.append(classes[cls_mask][mask])
-                    image_idx_.append(torch.ones(len(bboxes[cls_mask][mask]), device=self.device) * i)
+                    image_idx_.append([image_info['id'][i]] * len(bboxes[cls_mask][mask]))
             else:
                 bboxes_.append(bboxes)
                 confidence_.append(confidence)
                 classes_.append(classes)
-                image_idx_.append(torch.ones(len(bboxes)) * i)
+                image_idx_.append([image_info['id'][i]] * len(bboxes))
 
         if len(bboxes_) > 0:
             bboxes = torch.cat(bboxes_).view(-1, 4)
             classes = torch.cat(classes_).flatten()
             confidence = torch.cat(confidence_).flatten()
-            image_idx = torch.cat(image_idx_).flatten()
+            image_idx = [item for sublist in image_idx_ for item in sublist]
 
             return bboxes, classes, confidence, image_idx
         else:
@@ -723,32 +740,37 @@ class YOLOv2tiny(nn.Module):
             with tqdm(total=len(dataloader),
                       desc='Exporting',
                       leave=True) as pbar:
-                for images, image_info, targets in dataloader:
-                # for images, image_info in dataloader:
+                for data in dataloader:
+                    images, image_info = data
                     images = images.to(self.device)
                     predictions = self(images)
-                    predictions = targets
                     bboxes, classes, confidences, image_idx = self.process_bboxes(predictions,
                                                                                   image_info,
                                                                                   confidence_threshold,
                                                                                   overlap_threshold,
                                                                                   nms=True)
+
                     if show:
-                        for idx, image in enumerate(images):
+                        for i, (idx, image) in enumerate(zip(image_info['id'], images)):
                             width = self.image_size[0]
                             height = self.image_size[1]
-                            image = to_numpy_image(image, size=(width, height))
-                            mask = image_idx == idx
+                            if image.shape[0] == 3:
+                                image = to_numpy_image(image, size=(width, height))
+                            else:
+                                mu = dataset.mu[0]
+                                sigma = dataset.sigma[0]
+                                image = to_numpy_image(image[0], size=(width, height), mu=mu, sigma=sigma, normalised=False)
+                            mask = np.array(image_idx) == idx
                             for bbox, cls, confidence in zip(bboxes[mask], classes[mask], confidences[mask]):
                                 name = dataset.classes[cls]
                                 add_bbox_to_image(image, bbox, confidence, name)
                             plt.imshow(image)
-                            # plt.axis('off')
+                            plt.axis('off')
                             plt.show()
 
                     if export:
                         for idx in range(len(images)):
-                            mask = image_idx == idx
+                            mask = [True if idx_ == image_info['id'][idx] else False for idx_ in image_idx]
                             for bbox, cls, confidence in zip(bboxes[mask], classes[mask], confidences[mask]):
                                 name = dataset.classes[cls]
                                 ids = image_info['id'][idx]
@@ -756,8 +778,8 @@ class YOLOv2tiny(nn.Module):
                                 confidence = confidence.item()
                                 bbox[::2] -= image_info['padding'][0][idx]
                                 bbox[1::2] -= image_info['padding'][1][idx]
-                                bbox[::2] /= image_info['ratio'][0][idx]
-                                bbox[1::2] /= image_info['ratio'][1][idx]
+                                bbox[::2] /= image_info['scale'][0][idx]
+                                bbox[1::2] /= image_info['scale'][1][idx]
                                 x1, y1, x2, y2 = bbox.detach().cpu().numpy()
                                 export_prediction(cls=name,
                                                   prefix=self.name,
@@ -780,14 +802,14 @@ class YOLOv2tiny(nn.Module):
                 bboxes = torch.cat(bboxes_).view(-1, 4)
                 classes = torch.cat(classes_).flatten()
                 confidence = torch.cat(confidence_).flatten()
-                image_idx = torch.cat(image_idx_).flatten()
+                image_idx = [item for sublist in image_idx_ for item in sublist]
 
                 return bboxes, classes, confidence, image_idx
             else:
                 return torch.tensor([], device=self.device), \
                        torch.tensor([], device=self.device), \
                        torch.tensor([], device=self.device), \
-                       torch.tensor([], device=self.device)
+                       []
 
     def freeze(self, freeze_last_layer=True):
         last_set = False
@@ -819,23 +841,3 @@ class YOLOv2tiny(nn.Module):
                 trainable_parameters.append(param)
 
         return trainable_parameters
-
-    def to_fp16(self):
-        self.fp16 = True
-        self.half()
-        self.anchors = self.anchors.half()
-        for seq in self.layers:
-            for layer in seq:
-                if isinstance(layer, nn.BatchNorm2d):
-                    layer = layer.float()
-        for layer in self.detection_layers:
-            layer = layer.anchors.half()
-        self.to(self.device)
-
-    def to_fp32(self):
-        self.fp16 = False
-        self.float()
-        self.anchors = self.anchors.float()
-        for layer in self.detection_layers:
-            layer.anchors = layer.anchors.float()
-        self.to(self.device)
