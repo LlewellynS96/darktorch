@@ -66,20 +66,41 @@ class Swish(nn.Module):
         return x * torch.sigmoid(self.beta * x)
 
 
-class FocalLoss(nn.Module):
-    def __init__(self, gamma=2, reduction='mean'):
-        super(FocalLoss, self).__init__()
-        self.gamma = gamma
-        self.reduction = reduction
+class ReorgLayer(nn.Module):
+    def __init__(self, stride=2):
+        super(ReorgLayer, self).__init__()
+        self.stride = stride
 
-    def forward(self, x, target):
-        """
-        input: [N, C], float32
-        target: [N, ], int64
-        """
-        logpt = F.log_softmax(x, dim=-1)
-        pt = torch.exp(logpt)
-        logpt = (1 - pt)**self.gamma * logpt
-        loss = F.nll_loss(logpt, target, reduction=self.reduction)
+    def forward(self, x):
+        B, C, H, W = x.data.size()
+        ws = self.stride
+        hs = self.stride
+        x = x.view(B, C, int(H / hs), hs, int(W / ws), ws).transpose(3, 4).contiguous()
+        x = x.view(B, C, int(H / hs * W / ws), hs * ws).transpose(2, 3).contiguous()
+        x = x.view(B, C, hs * ws, int(H / hs), int(W / ws)).transpose(1, 2).contiguous()
+        x = x.view(B, hs * ws * C, int(H / hs), int(W / ws))
+        return x
 
-        return loss
+
+class RouteLayer(nn.Module):
+    def __init__(self, index, cache, first, second):
+        super(RouteLayer, self).__init__()
+        self.index = index
+        self.cache = cache
+        self.first = first
+        self.second = second
+
+    def forward(self, x):
+        if self.second == 0:
+            x = self.cache[self.index + self.first]
+        else:
+            x = torch.cat((self.cache[self.index + self.first], self.cache[self.index + self.second]), 1)
+        return x
+
+
+class EmptyModule(nn.Module):
+    def __init__(self):
+        super(EmptyModule, self).__init__()
+
+    def forward(self, x):
+        return x

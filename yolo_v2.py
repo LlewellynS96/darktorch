@@ -21,85 +21,87 @@ if __name__ == '__main__':
     predict = True
 
     model = YOLOv2tiny(name='YOLOv2-tiny',
-                       model='models/yolov2-tiny-voc.cfg',
+                       # model='models/yolov2-tiny-voc.cfg',
+                       model='models/yolov2-voc.cfg',
                        device=device)
 
     torchsummary.summary(model, (model.channels, *model.default_image_size), device=device)
 
-    # train_data = PascalDatasetYOLO(root_dir=['../../../Data/VOCdevkit/VOC2007/',
-    #                                          '../../../Data/VOCdevkit/VOC2012/'],
-    #                                class_file='../../../Data/VOCdevkit/voc.names',
-    #                                dataset=['trainval',
-    #                                         'trainval'],
-    #                                batch_size=model.batch_size // model.subdivisions,
-    #                                image_size=model.default_image_size,
-    #                                anchors=model.anchors,
-    #                                do_transforms=True,
-    #                                multi_scale=model.multi_scale
-    #                                )
+    train_data = PascalDatasetYOLO(root_dir=['../../../Data/VOCdevkit/VOC2007/',
+                                             '../../../Data/VOCdevkit/VOC2012/'],
+                                   class_file='../../../Data/VOCdevkit/voc.names',
+                                   dataset=['trainval',
+                                            'trainval'],
+                                   batch_size=model.batch_size // model.subdivisions,
+                                   image_size=model.default_image_size,
+                                   anchors=model.anchors,
+                                   do_transforms=True,
+                                   multi_scale=model.multi_scale
+                                   )
+
+    val_data = PascalDatasetYOLO(root_dir='../../../Data/VOCdevkit/VOC2007/',
+                                 class_file='../../../Data/VOCdevkit/voc.names',
+                                 dataset='test',
+                                 batch_size=model.batch_size // model.subdivisions,
+                                 image_size=model.default_image_size,
+                                 anchors=model.anchors,
+                                 do_transforms=True,
+                                 multi_scale=model.multi_scale
+                                 )
+
+    test_data = PascalDatasetYOLO(root_dir='../../../Data/VOCdevkit/VOC2007/',
+                                  class_file='../../../Data/VOCdevkit/voc.names',
+                                  #root_dir='../../../Data/SS/',
+                                  #class_file='../../../Data/SS/ss.names',
+                                  dataset='test',
+                                  batch_size=model.batch_size // model.subdivisions,
+                                  image_size=model.default_image_size,
+                                  anchors=model.anchors,
+                                  do_transforms=False,
+                                  multi_scale=False,
+                                  return_targets=False
+                                  )
+
+    # train_data = SSDatasetYOLO(root_dir='../../../Data/SS/',
+    #                            class_file='../../../Data/SS/ss.names',
+    #                            dataset='train',
+    #                            batch_size=model.batch_size // model.subdivisions,
+    #                            image_size=model.default_image_size,
+    #                            mu=[-25.52],
+    #                            sigma=[8.55],
+    #                            mode='spectrogram_db',
+    #                            anchors=model.anchors,
+    #                            return_targets=True
+    #                            )
     #
-    # val_data = PascalDatasetYOLO(root_dir='../../../Data/VOCdevkit/VOC2007/',
-    #                              class_file='../../../Data/VOCdevkit/voc.names',
-    #                              dataset='test',
-    #                              batch_size=model.batch_size // model.subdivisions,
-    #                              image_size=model.default_image_size,
-    #                              anchors=model.anchors,
-    #                              do_transforms=True,
-    #                              multi_scale=model.multi_scale
-    #                              )
+    # val_data = SSDatasetYOLO(root_dir='../../../Data/SS/',
+    #                          class_file='../../../Data/SS/ss.names',
+    #                          dataset='test',
+    #                          batch_size=model.batch_size // model.subdivisions,
+    #                          image_size=model.default_image_size,
+    #                          mu=[-25.52],
+    #                          sigma=[8.55],
+    #                          mode='spectrogram_db',
+    #                          anchors=model.anchors,
+    #                          return_targets=True
+    #                          )
     #
-    # test_data = PascalDatasetYOLO(#root_dir='../../../Data/VOCdevkit/VOC2007/',
-    #                               #class_file='../../../Data/VOCdevkit/voc.names',
-    #                               root_dir='../../../Data/SS/',
-    #                               class_file='../../../Data/SS/ss.names',
-    #                               dataset='test',
-    #                               batch_size=1, #model.batch_size // model.subdivisions,
-    #                               image_size=(512, 512), #model.default_image_size,
-    #                               anchors=model.anchors,
-    #                               do_transforms=False,
-    #                               multi_scale=False,
-    #                               return_targets=False
-    #                               )
+    # test_data = SSDatasetYOLO(root_dir='../../../Data/SS/',
+    #                           class_file='../../../Data/SS/ss.names',
+    #                           dataset='test',
+    #                           batch_size=1, #model.batch_size // model.subdivisions,
+    #                           image_size=model.default_image_size,
+    #                           mu=[-25.52],
+    #                           sigma=[8.55],
+    #                           mode='spectrogram_db',
+    #                           anchors=model.anchors,
+    #                           skip_difficult=False,
+    #                           return_targets=False
+    #                           )
 
-    train_data = SSDatasetYOLO(root_dir='../../../Data/SS/',
-                               class_file='../../../Data/SS/ss.names',
-                               dataset='train',
-                               batch_size=model.batch_size // model.subdivisions,
-                               image_size=model.default_image_size,
-                               mu=[-25.52],
-                               sigma=[8.55],
-                               mode='spectrogram_db',
-                               anchors=model.anchors,
-                               return_targets=True
-                               )
-
-    val_data = SSDatasetYOLO(root_dir='../../../Data/SS/',
-                             class_file='../../../Data/SS/ss.names',
-                             dataset='test',
-                             batch_size=model.batch_size // model.subdivisions,
-                             image_size=model.default_image_size,
-                             mu=[-25.52],
-                             sigma=[8.55],
-                             mode='spectrogram_db',
-                             anchors=model.anchors,
-                             return_targets=True
-                             )
-
-    test_data = SSDatasetYOLO(root_dir='../../../Data/SS/',
-                              class_file='../../../Data/SS/ss.names',
-                              dataset='test',
-                              batch_size=1, #model.batch_size // model.subdivisions,
-                              image_size=model.default_image_size,
-                              mu=[-25.52],
-                              sigma=[8.55],
-                              mode='spectrogram_db',
-                              anchors=model.anchors,
-                              skip_difficult=False,
-                              return_targets=False
-                              )
-
+    model.load_weights('models/yolov2-voc.weights')
     # model.load_weights('models/darknet.weights', only_imagenet=True)
-    model.load_weights('models/yolov2-tiny.conv.13', only_imagenet=True)
+    # model.load_weights('models/yolov2-tiny.conv.13', only_imagenet=True)
     # model.load_weights('models/yolov2-tiny-voc.weights')
     # model.load_weights('models/tiny-yolo-voc_final.weights')
     # model = pickle.load(open('YOLOv2-tiny_120.pkl', 'rb'))
@@ -107,7 +109,7 @@ if __name__ == '__main__':
     # model.device = device
     model = model.to(device)
 
-    model.set_input_dims(1)
+    # model.set_input_dims(1)
 
     if freeze:
         model.freeze(freeze_last_layer=False)
@@ -139,10 +141,10 @@ if __name__ == '__main__':
         set_random_seed(12345)
 
         # model.set_input_dims(1)
-        model = pickle.load(open('YOLOv2-tiny_ss_120.pkl', 'rb'))
+        # model = pickle.load(open('YOLOv2-tiny_ss_120.pkl', 'rb'))
 
         model.predict(dataset=test_data,
-                      confidence_threshold=.05,
+                      confidence_threshold=.9,
                       overlap_threshold=.45,
                       show=True,
                       export=False

@@ -40,8 +40,11 @@ class YOLOv2tiny(nn.Module):
         self.stride = self.calculate_stride()
         self.grid_size = self.calculate_grid_size()
 
+        self.cache = {}
+
         self.build_modules()
 
+        self.cache_layers = self.get_cache_layers()
         self.anchors = self.collect_anchors()
         self.num_anchors = len(self.anchors)
 
@@ -70,7 +73,7 @@ class YOLOv2tiny(nn.Module):
     def set_input_dims(self, dims=3):
         conv = self.layers[0][0]
         assert dims <= conv.weight.data.shape[1]
-        self.layers[0][0] = nn.Conv2d(dims, 16, kernel_size=3, stride=1, padding=1, bias=False)
+        self.layers[0][0] = nn.Conv2d(dims, conv.weight.data.shape[0], kernel_size=3, stride=1, padding=1, bias=False)
         self.layers[0][0].weight.data.copy_(conv.weight.data[:, :dims])
         self.to(self.device)
         self.channels = dims
@@ -81,8 +84,10 @@ class YOLOv2tiny(nn.Module):
 
         self.set_image_size(x.shape[-2:])
 
-        for layer in self.layers:
+        for i, layer in enumerate(self.layers):
             x = layer(x)
+            if i in self.cache_layers:
+                self.cache[i] = x
 
         return x
 
@@ -443,28 +448,35 @@ class YOLOv2tiny(nn.Module):
             elif block['type'] == 'route':
                 block['layers'] = block['layers'].split(',')
 
-                start = int(block['layers'][0])
+                first = int(block['layers'][0])
                 try:
-                    end = int(block['layers'][1])
+                    second = int(block['layers'][1])
                 except IndexError:
-                    end = 0
+                    second = 0
 
-                if start > 0:
-                    start = start - index
-                if end > 0:
-                    end = end - index
+                if first > 0:
+                    first = first - index
+                if second > 0:
+                    second = second - index
 
-                route_layer = EmptyLayer()
+                route_layer = RouteLayer(index, self.cache, first, second)
                 module.add_module('route_{0}'.format(index), route_layer)
 
-                if end < 0:
-                    filters = output_filters[index + start] + output_filters[index + end]
+                if second < 0:
+                    filters = output_filters[index + first] + output_filters[index + second]
                 else:
-                    filters = output_filters[index + start]
+                    filters = output_filters[index + first]
 
             elif block['type'] == 'shortcut':
                 shortcut_layer = EmptyLayer()
                 module.add_module('shortcut_{0}'.format(index), shortcut_layer)
+
+            elif block['type'] == 'reorg':
+                stride = int(block['stride'])
+                reorg = ReorgLayer(stride)
+                module.add_module('reorg_{}'.format(index), reorg)
+
+                filters = filters * stride * stride
 
             elif block['type'] == 'maxpool':
                 stride = int(block['stride'])
@@ -639,6 +651,17 @@ class YOLOv2tiny(nn.Module):
 
         return torch.cat(anchors)
 
+    def get_cache_layers(self):
+
+        cache = []
+        for i, layer in enumerate(self.layers):
+            if isinstance(layer[0], RouteLayer):
+                cache.append(i + layer[0].first)
+                if layer[0].second != 0:
+                    cache.append(i + layer[0].second)
+
+        return cache
+
     def calculate_grid_size(self):
 
         width, height = self.image_size
@@ -721,7 +744,7 @@ class YOLOv2tiny(nn.Module):
             return torch.tensor([], device=self.device), \
                    torch.tensor([], device=self.device), \
                    torch.tensor([], device=self.device), \
-                   torch.tensor([], device=self.device)
+                   []
 
     def predict(self, dataset, confidence_threshold=0.1, overlap_threshold=0.5, show=True, export=True):
 
@@ -760,10 +783,11 @@ class YOLOv2tiny(nn.Module):
                                 mu = dataset.mu[0]
                                 sigma = dataset.sigma[0]
                                 image = to_numpy_image(image[0], size=(width, height), mu=mu, sigma=sigma, normalised=False)
-                            mask = np.array(image_idx) == idx
-                            for bbox, cls, confidence in zip(bboxes[mask], classes[mask], confidences[mask]):
-                                name = dataset.classes[cls]
-                                add_bbox_to_image(image, bbox, confidence, name)
+                            if len(image_idx) > 0:
+                                mask = np.array(image_idx) == idx
+                                for bbox, cls, confidence in zip(bboxes[mask], classes[mask], confidences[mask]):
+                                    name = dataset.classes[cls]
+                                    add_bbox_to_image(image, bbox, confidence, name)
                             plt.imshow(image)
                             plt.axis('off')
                             plt.show()

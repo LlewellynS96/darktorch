@@ -212,7 +212,7 @@ if __name__ == '__main__':
                                  classname=cl,
                                  cachedir='.',
                                  ovthresh=0.5,
-                                 use_07_metric=False)
+                                 use_07_metric=True)
         mean_ap.append(ap)
         print(ap)
         # plt.plot(rec, prec)
