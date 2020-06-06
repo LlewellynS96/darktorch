@@ -6,7 +6,6 @@ from tqdm import tqdm
 from utils import NUM_WORKERS
 from utils import jaccard, xywh2xyxy, non_maximum_suppression, to_numpy_image, add_bbox_to_image, export_prediction
 from layers import *
-from time import time
 
 LAMBDA_COORD = 5.
 LAMBDA_OBJ = 1.
@@ -16,16 +15,15 @@ LAMBDA_NOOBJ = 1.
 USE_CROSS_ENTROPY = False
 
 
-class YOLOv2tiny(nn.Module):
+class YOLOv2(nn.Module):
 
-    def __init__(self, model, name='YOLOv2-tiny', device='cuda'):
+    def __init__(self, model, name='YOLOv2', device='cuda'):
 
-        super(YOLOv2tiny, self).__init__()
+        super(YOLOv2, self).__init__()
 
         self.net_info = {}
         self.blocks = []
         self.layers = nn.ModuleList()
-        self.detection_layers = []
         self.name = name
         self.device = device
 
@@ -37,16 +35,16 @@ class YOLOv2tiny(nn.Module):
         self.num_classes = int(self.blocks[-1]['classes'])
         self.num_features = 5 + self.num_classes
 
-        self.stride = self.calculate_stride()
-        self.grid_size = self.calculate_grid_size()
-
         self.cache = {}
-
+        self.detection_layers = []
+        self.cache_layers = []
         self.build_modules()
 
-        self.cache_layers = self.get_cache_layers()
+        self.strides = self.calculate_strides()
+        self.grid_sizes = [[-1, -1] for _ in range(len(self.detection_layers))]
+        self.set_grid_sizes()
+
         self.anchors = self.collect_anchors()
-        self.num_anchors = len(self.anchors)
 
         self.lr = float(self.net_info['learning_rate'])
         self.momentum = float(self.net_info['momentum'])
@@ -84,114 +82,119 @@ class YOLOv2tiny(nn.Module):
 
         self.set_image_size(x.shape[-2:])
 
+        output = []
         for i, layer in enumerate(self.layers):
             x = layer(x)
             if i in self.cache_layers:
                 self.cache[i] = x
-
-        return x
+            if i in self.detection_layers:
+                output.append(x)
+        return output
 
     def loss(self, predictions, targets, stats):
+        assert type(predictions) == list
+        loss = {}
+        for i, (p, t) in enumerate(zip(predictions, targets)):
+            assert p.shape == t.shape
 
-        assert predictions.shape == targets.shape
+            l = {}
+            batch_size = t.shape[0]
 
-        loss = dict()
-        batch_size = targets.shape[0]
+            t = t.permute(0, 2, 3, 1)
+            p = p.permute(0, 2, 3, 1)
 
-        targets = targets.permute(0, 2, 3, 1)
-        predictions = predictions.permute(0, 2, 3, 1)
+            t = t.contiguous().view(batch_size, -1, self.num_features)
+            p = p.contiguous().view(batch_size, -1, self.num_features)
 
-        targets = targets.contiguous().view(batch_size, -1, self.num_features)
-        predictions = predictions.contiguous().view(batch_size, -1, self.num_features)
+            img_idx = torch.arange(batch_size, dtype=torch.float, device=self.device)
+            img_idx = img_idx.reshape(-1, 1) * p.shape[2]
+            t[:, :, 0] += 2. * img_idx
+            p[:, :, 0] += 2. * img_idx
+            img_idx = torch.arange(batch_size, dtype=torch.float, device=self.device)
+            img_idx = img_idx.reshape(-1, 1) * p.shape[1]
+            t[:, :, 1] += 2. * img_idx
+            p[:, :, 1] += 2. * img_idx
 
-        img_idx = torch.arange(batch_size, dtype=torch.float, device=self.device).reshape(-1, 1) * self.grid_size[0]
-        targets[:, :, 0] += 2. * img_idx
-        predictions[:, :, 0] += 2. * img_idx
-        img_idx = torch.arange(batch_size, dtype=torch.float, device=self.device).reshape(-1, 1) * self.grid_size[1]
-        targets[:, :, 1] += 2. * img_idx
-        predictions[:, :, 1] += 2. * img_idx
+            t = t.contiguous().view(-1, self.num_features)
+            p = p.contiguous().view(-1, self.num_features)
 
-        targets = targets.contiguous().view(-1, self.num_features)
-        predictions = predictions.contiguous().view(-1, self.num_features)
+            obj_mask = torch.nonzero(t[:, 4]).flatten()
+            num_obj = len(obj_mask)
 
-        obj_mask = torch.nonzero(targets[:, 4]).flatten()
-        num_obj = len(obj_mask)
+            if obj_mask.numel() > 0:
+                p_xyxy = xywh2xyxy(p[:, :4].detach())
+                t_xyxy = xywh2xyxy(t[obj_mask, :4])
 
-        if obj_mask.numel() > 0:
-            predictions_xyxy = xywh2xyxy(predictions[:, :4].detach())
-            targets_xyxy = xywh2xyxy(targets[obj_mask, :4])
+                all_ious = jaccard(p_xyxy, t_xyxy)
+                ious, _ = torch.max(all_ious, dim=1)
+                stats['avg_obj_iou'].append(all_ious[obj_mask].diag().mean().item())
 
-            all_ious = jaccard(predictions_xyxy, targets_xyxy)
-            ious, _ = torch.max(all_ious, dim=1)
-            stats['avg_obj_iou'].append(all_ious[obj_mask].diag().mean().item())
+                mask = torch.nonzero(ious > self.noobj_iou_threshold).squeeze()
+                t[mask, 4] = 1.
+                noobj_mask = torch.nonzero(t[:, 4] == 0.).squeeze()
 
-            mask = torch.nonzero(ious > self.noobj_iou_threshold).squeeze()
-            targets[mask, 4] = 1.
-            noobj_mask = torch.nonzero(targets[:, 4] == 0.).squeeze()
+                l['coord'] = nn.MSELoss(reduction='sum')(p[obj_mask, 0], t[obj_mask, 0])
+                l['coord'] += nn.MSELoss(reduction='sum')(p[obj_mask, 1], t[obj_mask, 1])
+                l['coord'] += nn.MSELoss(reduction='sum')(torch.sqrt(p[obj_mask, 2]), torch.sqrt(t[obj_mask, 2]))
+                l['coord'] += nn.MSELoss(reduction='sum')(torch.sqrt(p[obj_mask, 3]), torch.sqrt(t[obj_mask, 3]))
+                l['coord'] *= LAMBDA_COORD / batch_size
 
-            # anchors = self.anchors[obj_mask % 5]
-            loss['coord'] = nn.MSELoss(reduction='sum')(predictions[obj_mask, 0], targets[obj_mask, 0])
-            loss['coord'] += nn.MSELoss(reduction='sum')(predictions[obj_mask, 1], targets[obj_mask, 1])
-            loss['coord'] += nn.MSELoss(reduction='sum')(torch.sqrt(predictions[obj_mask, 2]),
-                                                         torch.sqrt(targets[obj_mask, 2]))
-            loss['coord'] += nn.MSELoss(reduction='sum')(torch.sqrt(predictions[obj_mask, 3]),
-                                                         torch.sqrt(targets[obj_mask, 3]))
-            loss['coord'] *= LAMBDA_COORD / batch_size
+                if self.iteration * self.batch_size < 12800:
+                    l['bias'] = nn.MSELoss(reduction='sum')(p[noobj_mask, 0], t[noobj_mask, 0])
+                    l['bias'] += nn.MSELoss(reduction='sum')(p[noobj_mask, 1], t[noobj_mask, 1])
+                    l['bias'] += nn.MSELoss(reduction='sum')(torch.sqrt(p[noobj_mask, 2]),
+                                                             torch.sqrt(t[noobj_mask, 2]))
+                    l['bias'] += nn.MSELoss(reduction='sum')(torch.sqrt(p[noobj_mask, 3]),
+                                                             torch.sqrt(t[noobj_mask, 3]))
 
-            if self.iteration * self.batch_size < 12800:
-                # anchors = self.anchors[noobj_mask % 5]
-                loss['bias'] = nn.MSELoss(reduction='sum')(predictions[noobj_mask, 0],
-                                                           targets[noobj_mask, 0])
-                loss['bias'] += nn.MSELoss(reduction='sum')(predictions[noobj_mask, 1],
-                                                            targets[noobj_mask, 1])
-                loss['bias'] += nn.MSELoss(reduction='sum')(torch.sqrt(predictions[noobj_mask, 2]),
-                                                            torch.sqrt(targets[noobj_mask, 2]))
-                loss['bias'] += nn.MSELoss(reduction='sum')(torch.sqrt(predictions[noobj_mask, 3]),
-                                                            torch.sqrt(targets[noobj_mask, 3]))
+                    l['bias'] *= 0.1 / batch_size
 
-                loss['bias'] *= 0.1 / batch_size
+                p[obj_mask, 5:] = F.log_softmax(p[obj_mask, 5:], dim=-1)
+                t_long = torch.argmax(t[obj_mask, 5:], dim=1)
+                if USE_CROSS_ENTROPY:
+                    l['class'] = nn.NLLLoss(reduction='sum')(p[obj_mask, 5:], t_long)
+                else:
+                    l['class'] = nn.MSELoss(reduction='sum')(torch.exp(p[obj_mask, 5:]),
+                                                             t[obj_mask, 5:])
+                l['class'] *= LAMBDA_CLASS / batch_size
+                stats['avg_class'].append(torch.exp(p[obj_mask, 5 + t_long]).mean().item())
 
-            predictions[obj_mask, 5:] = F.log_softmax(predictions[obj_mask, 5:], dim=-1)
-            targets_long = torch.argmax(targets[obj_mask, 5:], dim=1)
-            if USE_CROSS_ENTROPY:
-                loss['class'] = nn.NLLLoss(reduction='sum')(predictions[obj_mask, 5:], targets_long)
+                if self.rescore:
+                    l['object'] = nn.MSELoss(reduction='sum')(p[obj_mask, 4],
+                                                              all_ious[obj_mask, torch.arange(num_obj)].detach())
+                else:
+                    l['object'] = nn.MSELoss(reduction='sum')(p[obj_mask, 4],
+                                                              t[obj_mask, 4])
+                l['object'] *= LAMBDA_OBJ / batch_size
+                stats['avg_pobj'].append(p[obj_mask, 4].mean().item())
+
+                l['no_object'] = nn.MSELoss(reduction='sum')(p[noobj_mask, 4],
+                                                             t[noobj_mask, 4])
+                l['no_object'] *= LAMBDA_NOOBJ / batch_size
+                stats['avg_pnoobj'].append(p[noobj_mask, 4].mean().item())
             else:
-                loss['class'] = nn.MSELoss(reduction='sum')(torch.exp(predictions[obj_mask, 5:]),
-                                                            targets[obj_mask, 5:])
-            loss['class'] *= LAMBDA_CLASS / batch_size
-            stats['avg_class'].append(torch.exp(predictions[obj_mask, 5 + targets_long]).mean().item())
+                l['object'] = torch.tensor([0.], device=self.device)
+                l['coord'] = torch.tensor([0.], device=self.device)
+                l['class'] = torch.tensor([0.], device=self.device)
+                l['no_object'] = LAMBDA_NOOBJ / batch_size * nn.MSELoss(reduction='sum')(p[:, 4],
+                                                                                         t[:, 4])
+                if self.iteration * self.batch_size < 12800:
+                    l['bias'] = nn.MSELoss(reduction='sum')(p[:, 0],
+                                                            t[:, 0])
+                    l['bias'] += nn.MSELoss(reduction='sum')(p[:, 1],
+                                                             t[:, 1])
+                    l['bias'] += nn.MSELoss(reduction='sum')(torch.sqrt(p[:, 2]),
+                                                             torch.sqrt(t[:, 2]))
+                    l['bias'] += nn.MSELoss(reduction='sum')(torch.sqrt(p[:, 3]),
+                                                             torch.sqrt(t[:, 3]))
+                    l['bias'] *= 0.1 / batch_size
 
-            if self.rescore:
-                loss['object'] = nn.MSELoss(reduction='sum')(predictions[obj_mask, 4],
-                                                             all_ious[obj_mask, torch.arange(num_obj)].detach())
-            else:
-                loss['object'] = nn.MSELoss(reduction='sum')(predictions[obj_mask, 4],
-                                                             targets[obj_mask, 4])
-            loss['object'] *= LAMBDA_OBJ / batch_size
-            stats['avg_pobj'].append(predictions[obj_mask, 4].mean().item())
-
-            loss['no_object'] = nn.MSELoss(reduction='sum')(predictions[noobj_mask, 4],
-                                                            targets[noobj_mask, 4])
-            loss['no_object'] *= LAMBDA_NOOBJ / batch_size
-            stats['avg_pnoobj'].append(predictions[noobj_mask, 4].mean().item())
-        else:
-            loss['object'] = torch.tensor([0.], device=self.device)
-            loss['coord'] = torch.tensor([0.], device=self.device)
-            loss['class'] = torch.tensor([0.], device=self.device)
-            loss['no_object'] = LAMBDA_NOOBJ / batch_size * nn.MSELoss(reduction='sum')(predictions[:, 4],
-                                                                                        targets[:, 4])
-            if self.iteration * self.batch_size < 12800:
-                loss['bias'] = nn.MSELoss(reduction='sum')(predictions[:, 0],
-                                                           targets[:, 0])
-                loss['bias'] += nn.MSELoss(reduction='sum')(predictions[:, 1],
-                                                            targets[:, 1])
-                loss['bias'] += nn.MSELoss(reduction='sum')(torch.sqrt(predictions[:, 2]),
-                                                            torch.sqrt(targets[:, 2]))
-                loss['bias'] += nn.MSELoss(reduction='sum')(torch.sqrt(predictions[:, 3]),
-                                                            torch.sqrt(targets[:, 3]))
-                loss['bias'] *= 0.1 / batch_size
-
-        loss['total'] = (loss['coord'] + loss['class'] + loss['object'] + loss['no_object'])
+            l['total'] = (l['coord'] + l['class'] + l['object'] + l['no_object'])
+            for k, v, in l.items():
+                try:
+                    loss[k] += v
+                except KeyError:
+                    loss[k] = v
 
         return loss, stats
 
@@ -240,7 +243,7 @@ class YOLOv2tiny(nn.Module):
                       unit='batches') as inner:
                 for images, _, targets in train_dataloader:
                     images = images.to(self.device)
-                    targets = targets.to(self.device)
+                    targets = [t.to(self.device) for t in targets]
                     if inner.n % self.subdivisions == 0:
                         optimizer.zero_grad()
                     predictions = self(images)
@@ -301,19 +304,20 @@ class YOLOv2tiny(nn.Module):
 
         return all_train_loss, all_train_stats, all_val_loss, all_val_stats
 
-    def set_grid_size(self, x, y):
+    def set_grid_sizes(self):
 
-        assert isinstance(x, int)
-        assert isinstance(y, int)
-        assert x == y, 'This implementation has only been tested for square grids.'
+        width, height = self.image_size
 
-        self.grid_size = x, y
-        for layer in self.detection_layers:
-            layer.grid_size = x, y
+        for i, _ in enumerate(self.detection_layers):
+            assert width % self.strides[i] == 0
+            assert height % self.strides[i] == 0
+            x = int(width / self.strides[i])
+            y = int(height / self.strides[i])
+            self.grid_sizes[i] = x, y
 
     def save_model(self, name):
         """
-        Save the entire YOLOv2tiny model by using the built-in Python
+        Save the entire YOLOv2 model by using the built-in Python
         pickle module.
         Parameters
         ----------
@@ -355,7 +359,7 @@ class YOLOv2tiny(nn.Module):
         with torch.no_grad():
             for i, (images, _, targets) in enumerate(val_dataloader, 1):
                 images = images.to(self.device)
-                targets = targets.to(self.device)
+                targets = [t.to(self.device) for t in targets]
                 predictions = self(images)
                 loss, stats = self.loss(predictions, targets, stats)
                 losses.append(loss['total'].item())
@@ -462,6 +466,10 @@ class YOLOv2tiny(nn.Module):
                 route_layer = RouteLayer(index, self.cache, first, second)
                 module.add_module('route_{0}'.format(index), route_layer)
 
+                self.cache_layers.append(index + first)
+                if second < 0:
+                    self.cache_layers.append(index + second)
+
                 if second < 0:
                     filters = output_filters[index + first] + output_filters[index + second]
                 else:
@@ -476,7 +484,7 @@ class YOLOv2tiny(nn.Module):
                 reorg = ReorgLayer(stride)
                 module.add_module('reorg_{}'.format(index), reorg)
 
-                filters = filters * stride * stride
+                filters = prev_filters * stride * stride
 
             elif block['type'] == 'maxpool':
                 stride = int(block['stride'])
@@ -490,8 +498,6 @@ class YOLOv2tiny(nn.Module):
                 module.add_module('maxpool_{}'.format(index), maxpool_layer)
 
             elif block['type'] == 'yolo':
-                assert False, NotImplementedError
-
                 mask = block['mask'].split(',')
                 mask = [int(x) for x in mask]
 
@@ -501,18 +507,16 @@ class YOLOv2tiny(nn.Module):
                 anchors = [(anchors[i] / width, anchors[i + 1] / height)
                            for i in range(0, len(anchors), 2)]
                 anchors = [anchors[i] for i in mask]
-
-                detection_layer = YOLOv3Layer(self, anchors, softmax=True)
-                self.detection_layers.append(detection_layer)
+                detection_layer = YOLOLayer(self, anchors)
+                self.detection_layers.append(index)
                 module.add_module('detection_{}'.format(index), detection_layer)
 
             elif block['type'] == 'region':
                 anchors = block['anchors'].split(',')
                 anchors = [(float(anchors[i]), float(anchors[i + 1]))
                            for i in range(0, len(anchors), 2)]
-
-                detection_layer = YOLOv2Layer(self, anchors)
-                self.detection_layers.append(detection_layer)
+                detection_layer = YOLOLayer(self, anchors)
+                self.detection_layers.append(index)
                 module.add_module('detection_{}'.format(index), detection_layer)
 
             else:
@@ -630,46 +634,21 @@ class YOLOv2tiny(nn.Module):
 
                 conv_layer.weight.data.detach().cpu().numpy().tofile(f)
 
-    def calculate_stride(self):
+    def calculate_strides(self):
 
         stride = 1.
+        strides = []
         for block in self.blocks:
-            if block['type'] == 'maxpool':
+            if block['type'] == 'maxpool' or block['type'] == 'convolutional':
                 size = int(block['size'])
                 s = int(block['stride'])
                 div = (1. - size) / s + 1.
                 if div > 0:
                     stride /= div
+            if block['type'] == 'region' or block['type'] == 'yolo':
+                strides.append(int(stride))
 
-        return int(stride)
-
-    def collect_anchors(self):
-
-        anchors = []
-        for layer in self.detection_layers:
-            anchors.append(layer.anchors)
-
-        return torch.cat(anchors)
-
-    def get_cache_layers(self):
-
-        cache = []
-        for i, layer in enumerate(self.layers):
-            if isinstance(layer[0], RouteLayer):
-                cache.append(i + layer[0].first)
-                if layer[0].second != 0:
-                    cache.append(i + layer[0].second)
-
-        return cache
-
-    def calculate_grid_size(self):
-
-        width, height = self.image_size
-
-        assert width % self.stride == 0
-        assert height % self.stride == 0
-
-        return int(width / self.stride), int(height / self.stride)
+        return strides
 
     def set_image_size(self, xy):
 
@@ -679,65 +658,90 @@ class YOLOv2tiny(nn.Module):
         assert isinstance(y, int)
 
         self.image_size = x, y
-        grid_size = self.calculate_grid_size()
-        self.set_grid_size(*grid_size)
+        self.set_grid_sizes()
+
+    def collect_anchors(self):
+        anchors = []
+        for i in self.detection_layers:
+            anchors.append(self.layers[i][0].anchors)
+
+        return anchors
 
     def process_bboxes(self, predictions, image_info, confidence_threshold=0.01, overlap_threshold=0.5, nms=True):
 
-        predictions = predictions.permute(0, 2, 3, 1)
-
         image_idx_ = []
         bboxes_ = []
-        confidence_ = []
         classes_ = []
+        conf_ = []
 
-        for i, prediction in enumerate(predictions):
-            prediction = prediction.contiguous().view(-1, self.num_features)
-            prediction[:, 5:] = F.softmax(prediction[:, 5:], dim=-1)
-            classes = torch.argmax(prediction[:, 5:], dim=-1)
-            idx = torch.arange(0, len(prediction))
-            confidence = prediction[:, 4] * prediction[idx, 5 + classes]
+        for i, predictions_ in enumerate(predictions):
+            predictions_ = predictions_.permute(0, 2, 3, 1)
 
-            mask = confidence > confidence_threshold
+            for j, prediction in enumerate(predictions_):
+                prediction = prediction.contiguous().view(-1, self.num_features)
+                prediction[:, 5:] = F.softmax(prediction[:, 5:], dim=-1)
+                classes = torch.argmax(prediction[:, 5:], dim=-1)
+                idx = torch.arange(0, len(prediction))
+                confidence = prediction[:, 4] * prediction[idx, 5 + classes]
 
-            if sum(mask) == 0:
-                continue
+                mask = confidence > confidence_threshold
 
-            bboxes = prediction[mask, :4].clone()
-            bboxes[:, ::2] *= self.stride
-            bboxes[:, 1::2] *= self.stride
-            bboxes = xywh2xyxy(bboxes)
+                if sum(mask) == 0:
+                    continue
 
-            confidence = confidence[mask]
-            classes = classes[mask]
+                bboxes = prediction[mask, :4].clone()
+                bboxes[:, ::2] *= self.strides[i]
+                bboxes[:, 1::2] *= self.strides[i]
+                bboxes = xywh2xyxy(bboxes)
 
-            bboxes[:, ::2] = torch.clamp(bboxes[:, ::2],
-                                         min=image_info['padding'][0][i]+1,
-                                         max=self.image_size[0] - image_info['padding'][2][i])
-            bboxes[:, 1::2] = torch.clamp(bboxes[:, 1::2],
-                                          min=image_info['padding'][1][i]+1,
-                                          max=self.image_size[1] - image_info['padding'][3][i])
+                confidence = confidence[mask]
+                classes = classes[mask]
 
-            if nms:
-                cls = torch.unique(classes)
-                for c in cls:
-                    cls_mask = (classes == c).nonzero().flatten()
-                    mask = non_maximum_suppression(bboxes[cls_mask], confidence[cls_mask], overlap=overlap_threshold)
-                    bboxes_.append(bboxes[cls_mask][mask])
-                    confidence_.append(confidence[cls_mask][mask])
-                    classes_.append(classes[cls_mask][mask])
-                    image_idx_.append([image_info['id'][i]] * len(bboxes[cls_mask][mask]))
-            else:
+                bboxes[:, ::2] = torch.clamp(bboxes[:, ::2],
+                                             min=image_info['padding'][0][j]+1,
+                                             max=self.image_size[0] - image_info['padding'][2][j])
+                bboxes[:, 1::2] = torch.clamp(bboxes[:, 1::2],
+                                              min=image_info['padding'][1][j]+1,
+                                              max=self.image_size[1] - image_info['padding'][3][j])
+
+                image_idx_.append(j)
                 bboxes_.append(bboxes)
-                confidence_.append(confidence)
                 classes_.append(classes)
-                image_idx_.append([image_info['id'][i]] * len(bboxes))
+                conf_.append(confidence)
 
-        if len(bboxes_) > 0:
-            bboxes = torch.cat(bboxes_).view(-1, 4)
-            classes = torch.cat(classes_).flatten()
-            confidence = torch.cat(confidence_).flatten()
-            image_idx = [item for sublist in image_idx_ for item in sublist]
+        bboxes_ = \
+            [torch.cat([bboxes_[ii] for ii, k in enumerate(image_idx_) if k == idx]) for idx in np.unique(image_idx_)]
+        classes_ = \
+            [torch.cat([classes_[ii] for ii, k in enumerate(image_idx_) if k == idx]) for idx in np.unique(image_idx_)]
+        conf_ = \
+            [torch.cat([conf_[ii] for ii, k in enumerate(image_idx_) if k == idx]) for idx in np.unique(image_idx_)]
+
+        image_idx = []
+        bboxes = []
+        confidence = []
+        classes = []
+
+        for i, idx in enumerate(np.unique(image_idx_)):
+            if nms:
+                cls = torch.unique(classes_[i])
+                for c in cls:
+                    cls_mask = (classes_[i] == c).nonzero().flatten()
+                    mask = non_maximum_suppression(bboxes_[i][cls_mask], conf_[i][cls_mask], overlap=overlap_threshold)
+                    bboxes.append(bboxes_[i][cls_mask][mask])
+                    classes.append(classes_[i][cls_mask][mask])
+                    confidence.append(conf_[i][cls_mask][mask])
+                    image_idx.append([image_info['id'][idx]] * len(bboxes_[i][cls_mask][mask]))
+            else:
+                bboxes.append(bboxes_[i])
+                confidence.append(conf_[i])
+                classes.append(classes_[i])
+                image_idx.append([image_info['id'][idx]] * len(bboxes_[i]))
+
+        if len(bboxes) > 0:
+            bboxes = torch.cat(bboxes).view(-1, 4)
+            classes = torch.cat(classes).flatten()
+            confidence = torch.cat(confidence).flatten()
+            image_idx = [item for sublist in image_idx for item in sublist]
 
             return bboxes, classes, confidence, image_idx
         else:

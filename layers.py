@@ -11,13 +11,12 @@ class EmptyLayer(nn.Module):
         pass
 
 
-class YOLOv2Layer(nn.Module):
+class YOLOLayer(nn.Module):
     def __init__(self, parent, anchors):
-        super(YOLOv2Layer, self).__init__()
+        super(YOLOLayer, self).__init__()
         self.device = parent.device
         self.anchors = torch.tensor(anchors, requires_grad=False, device=self.device)
         self.num_anchors = len(anchors)
-        self.grid_size = parent.grid_size
         self.num_features = parent.num_features
 
     def forward(self, x):
@@ -29,15 +28,15 @@ class YOLOv2Layer(nn.Module):
         x[:, :2] = torch.sigmoid(x[:, :2])
         # Add the offset.
         offsets = torch.arange(0, int(x.shape[0] / in_shape[0]), requires_grad=False, device=self.device)
-        h_offsets = offsets / self.grid_size[0] / self.num_anchors
-        v_offsets = (offsets - (h_offsets * self.grid_size[0] * self.num_anchors)) / self.num_anchors
+        h_offsets = offsets / in_shape[2] / self.num_anchors
+        v_offsets = (offsets - (h_offsets * in_shape[1] * self.num_anchors)) / self.num_anchors
         h_offsets = h_offsets.repeat(in_shape[0])
         v_offsets = v_offsets.repeat(in_shape[0])
         x[:, 0] += h_offsets.float()
         x[:, 1] += v_offsets.float()
 
         # Convert t_w and t_h --> w and h.
-        anchors = self.anchors.repeat(in_shape[0] * self.grid_size[0] * self.grid_size[1], 1)
+        anchors = self.anchors.repeat(in_shape[0] * in_shape[2] * in_shape[1], 1)
 
         x[:, 2] = anchors[:, 0] * torch.exp(x[:, 2])
         x[:, 3] = anchors[:, 1] * torch.exp(x[:, 3])

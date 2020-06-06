@@ -23,7 +23,7 @@ class PascalDatasetYOLO(Dataset):
     """
 
     def __init__(self, anchors, class_file, root_dir, dataset=['train'], batch_size=1, skip_truncated=False, do_transforms=False,
-                 skip_difficult=True, image_size=(416, 416), stride=32, return_targets=True, multi_scale=False):
+                 skip_difficult=True, image_size=(416, 416), strides=32, return_targets=True, multi_scale=False):
         """
         Initialise the dataset object with some network and dataset specific parameters.
 
@@ -78,15 +78,21 @@ class PascalDatasetYOLO(Dataset):
         self.skip_truncated = skip_truncated
         self.skip_difficult = skip_difficult
 
-        self.anchors = anchors.clone().detach().cpu()
-        self.num_anchors = len(self.anchors)
+        self.anchors = [a.clone().detach().cpu() for a in anchors]
+        self.num_anchors = [len(a) for a in self.anchors]
 
         self.do_transforms = do_transforms
         self.return_targets = return_targets
 
         self.batch_size = batch_size
         self.multi_scale = multi_scale
-        self.stride = stride
+        if isinstance(strides, int):
+            strides = [strides]
+        self.strides = strides
+
+        assert len(anchors) == len(strides)
+        self.num_detectors = len(anchors)
+
         self.default_image_size = image_size
 
         for d in range(len(dataset)):
@@ -104,7 +110,7 @@ class PascalDatasetYOLO(Dataset):
         self.n = len(self.images)
 
         self.image_size = None
-        self.grid_size = None
+        self.grid_sizes = None
         if self.multi_scale:
             self.step()
         else:
@@ -180,18 +186,20 @@ class PascalDatasetYOLO(Dataset):
         if self.return_targets:
             annotations = get_annotations(self.annotations_dir[dataset], img)
             random.shuffle(annotations)
-            target = np.zeros((self.grid_size[index, 1], self.grid_size[index, 0], self.num_anchors * self.num_features),
-                              dtype=np.float32)
-            cell_dims = self.stride, self.stride
+            target = [np.zeros((self.grid_sizes[i][index, 1],
+                                self.grid_sizes[i][index, 0],
+                                self.num_anchors[i] * self.num_features),
+                               dtype=np.float32) for i in range(self.num_detectors)]
+            cell_dims = np.array([[self.strides[i], self.strides[i]] for i in range(self.num_detectors)])
 
-            anchors = torch.zeros((self.num_anchors, 4))
-            anchors[:, 2:] = self.anchors.clone()
-
-            target[:, np.arange(self.grid_size[index][0]), 0::self.num_features] = np.arange(self.grid_size[index][0])[
-                                                                                   None, :, None] + 0.5
-            target[:, :, 1::self.num_features] = np.arange(self.grid_size[index][1])[:, None, None] + 0.5
-            target[:, :, 2::self.num_features] = anchors[:, 2]
-            target[:, :, 3::self.num_features] = anchors[:, 3]
+            anchors = [torch.zeros((n, 4)) for n in self.num_anchors]
+            for i, (a, t) in enumerate(zip(anchors, target)):
+                a[:, 2:] = self.anchors[i].clone()
+                t[:, np.arange(self.grid_sizes[i][index][0]), 0::self.num_features] = \
+                    np.arange(self.grid_sizes[i][index][0])[None, :, None] + 0.5
+                t[:, :, 1::self.num_features] = np.arange(self.grid_sizes[i][index][1])[:, None, None] + 0.5
+                t[:, :, 2::self.num_features] = a[:, 2]
+                t[:, :, 3::self.num_features] = a[:, 3]
 
             # For each object in image.
             for annotation in annotations:
@@ -221,35 +229,43 @@ class PascalDatasetYOLO(Dataset):
                 xmin, xmax, ymin, ymax = np.round(xmin), np.round(xmax), np.round(ymin), np.round(ymax)
                 if xmax == xmin or ymax == ymin:
                     continue
-                xmin /= cell_dims[0]
-                xmax /= cell_dims[0]
-                ymin /= cell_dims[1]
-                ymax /= cell_dims[1]
-                if xmax - xmin < (SMALL_THRESHOLD * cell_dims[0]) or ymax - ymin < (SMALL_THRESHOLD * cell_dims[1]):
+                xmin /= cell_dims[:, 0]
+                xmax /= cell_dims[:, 0]
+                ymin /= cell_dims[:, 1]
+                ymax /= cell_dims[:, 1]
+                if all(xmax - xmin < (SMALL_THRESHOLD * cell_dims[:, 0])):
                     continue
-                idx = int(np.floor((xmax + xmin) / 2.)), int(np.floor((ymax + ymin) / 2.))
+                if all(ymax - ymin < (SMALL_THRESHOLD * cell_dims[:, 1])):
+                    continue
+                idx = np.floor((xmax + xmin) / 2.), np.floor((ymax + ymin) / 2.)
+                idx = np.array(idx, dtype=np.int).T
 
-                ground_truth = torch.tensor([[xmin, ymin, xmax, ymax]], dtype=torch.float32)
-                anchors = torch.zeros((self.num_anchors, 4))
-                anchors[:, 2:] = self.anchors.clone()
-
-                anchors[:, 0::2] += xmin
-                anchors[:, 1::2] += ymin
+                ground_truth = torch.tensor([xmin, ymin, xmax, ymax], dtype=torch.float32).t()
+                anchors = [torch.zeros((self.num_anchors[i], 4)) for i in range(self.num_detectors)]
+                for i in range(self.num_detectors):
+                    anchors[i][:, 2:] = self.anchors[i].clone()
+                    anchors[i][:, 0::2] += xmin[i]
+                    anchors[i][:, 1::2] += ymin[i]
+                anchors = torch.cat(anchors)
                 ious = jaccard(ground_truth, anchors)
                 if ious.max() < IOU_MATCH_THRESHOLD:
                     continue
-                assign = np.argmax(ious)
+                max_iou = 0.
+                cumsum_detectors = np.cumsum([0] + self.num_anchors)
+                for i in range(self.num_detectors):
+                    if ious[i, cumsum_detectors[i]:cumsum_detectors[i+1]].max() > max_iou:
+                        l = i
+                        d = ious[i, cumsum_detectors[i]:cumsum_detectors[i+1]].argmax()
 
-                target[idx[1], idx[0], assign * self.num_features + 0] = (xmin + xmax) / 2.
-                target[idx[1], idx[0], assign * self.num_features + 1] = (ymin + ymax) / 2.
-                target[idx[1], idx[0], assign * self.num_features + 2] = xmax - xmin
-                target[idx[1], idx[0], assign * self.num_features + 3] = ymax - ymin
-                target[idx[1], idx[0], assign * self.num_features + 4] = 1.
-                target[idx[1], idx[0], assign * self.num_features + 5:(assign + 1) * self.num_features] = \
+                target[l][idx[l][1], idx[l][0], d * self.num_features + 0] = (xmin[l] + xmax[l]) / 2.
+                target[l][idx[l][1], idx[l][0], d * self.num_features + 1] = (ymin[l] + ymax[l]) / 2.
+                target[l][idx[l][1], idx[l][0], d * self.num_features + 2] = xmax[l] - xmin[l]
+                target[l][idx[l][1], idx[l][0], d * self.num_features + 3] = ymax[l] - ymin[l]
+                target[l][idx[l][1], idx[l][0], d * self.num_features + 4] = 1.
+                target[l][idx[l][1], idx[l][0], d * self.num_features + 5:(d + 1) * self.num_features] = \
                     self.encode_categorical(name)
 
-            target = torch.tensor(target)
-            target = target.permute(2, 0, 1)
+            target = [torch.tensor(target[i]).permute(2, 0, 1) for i in range(self.num_detectors)]
 
             return image, image_info, target
         else:
@@ -261,7 +277,9 @@ class PascalDatasetYOLO(Dataset):
     def disable_multiscale(self):
         self.multi_scale = False
         self.image_size = np.repeat(self.default_image_size, self.n).reshape(-1, 2)
-        self.grid_size = np.repeat([s // self.stride for s in self.default_image_size], self.n).reshape(-1, 2)
+        self.grid_sizes = []
+        for stride in self.strides:
+            self.grid_sizes.append(np.repeat([s // stride for s in self.default_image_size], self.n).reshape(-1, 2))
 
     def shuffle_images(self):
         random.shuffle(self.images)
@@ -271,12 +289,17 @@ class PascalDatasetYOLO(Dataset):
             self.multi_scale = multi_scale
         self.shuffle_images()
         if self.multi_scale:
-            size = (2 * np.random.randint(4, 10, self.n // (self.batch_size * MULTI_SCALE_FREQ) + 1) + 1)
-            self.image_size = np.repeat(size * self.stride, 2 * self.batch_size * MULTI_SCALE_FREQ).reshape(-1, 2)
-            self.grid_size = np.repeat(size, 2 * self.batch_size * MULTI_SCALE_FREQ).reshape(-1, 2)
+            img_size = (2 * np.random.randint(4, 10, self.n // (self.batch_size * MULTI_SCALE_FREQ) + 1) + 1)
+            img_size *= self.strides[-1]
+            self.image_size = np.repeat(img_size, 2 * self.batch_size * MULTI_SCALE_FREQ).reshape(-1, 2)
+            self.grid_sizes = []
+            for s in self.strides:
+                self.grid_sizes.append(np.repeat(img_size // s, 2 * self.batch_size * MULTI_SCALE_FREQ).reshape(-1, 2))
         else:
             self.image_size = np.repeat(self.default_image_size, self.n).reshape(-1, 2)
-            self.grid_size = np.repeat([s // self.stride for s in self.default_image_size], self.n).reshape(-1, 2)
+            self.grid_sizes = []
+            for ss in self.strides:
+                self.grid_sizes.append(np.repeat([s // ss for s in self.default_image_size], self.n).reshape(-1, 2))
 
     def encode_categorical(self, name):
         y = self.classes.index(name)

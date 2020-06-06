@@ -188,7 +188,7 @@ def xyxy2xywh(xyxy):
     return xywh
 
 
-def read_classes(file) -> list:
+def read_classes(file):
     """
     Utility function that parses a text file containing all the classes
     that are present in a specific dataset.
