@@ -4,6 +4,7 @@
 # Written by Bharath Hariharan
 # --------------------------------------------------------
 
+import sys
 import xml.etree.ElementTree as ET
 import os
 import pickle
@@ -206,7 +207,7 @@ if __name__ == '__main__':
     mean_ap = []
     for cl in cls:
         rec, prec, ap = voc_eval(#detpath='./comp4_det_test_{}.txt',
-                                 detpath='./YOLOv2-tiny_det_test_{}.txt',
+                                 detpath=sys.argv[1] + '_det_test_{}.txt',
                                  annopath='../../../../Data/VOCdevkit/VOC2007/Annotations/{}.xml',
                                  imagesetfile='../../../../Data/VOCdevkit/VOC2007/ImageSets/Main/test.txt',
                                  classname=cl,

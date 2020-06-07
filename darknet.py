@@ -41,7 +41,8 @@ class YOLO(nn.Module):
         self.cache_layers = []
         self.build_modules()
 
-        self.grid_sizes = [[-1, -1] for _ in range(len(self.detection_layers))]
+        self.num_detectors = len(self.detection_layers)
+        self.grid_sizes = [[-1, -1] for _ in range(self.num_detectors)]
         self.set_grid_sizes()
 
         self.anchors = self.collect_anchors()
@@ -190,7 +191,7 @@ class YOLO(nn.Module):
             l['total'] = (l['coord'] + l['class'] + l['object'] + l['no_object'])
             for k, v, in l.items():
                 try:
-                    loss[k] += v
+                    loss[k] = loss[k] + v
                 except KeyError:
                     loss[k] = v
 
@@ -215,7 +216,7 @@ class YOLO(nn.Module):
 
         if val_data is not None:
             self.eval()
-            loss, val_stats = self.calculate_loss(val_data, val_data.batch_size, .5, num_workers)
+            loss, val_stats = self.calculate_loss(val_data, val_data.batch_size, None, .5, num_workers)
             self.train()
             val_data.step()
             all_val_loss.append(loss)
@@ -250,12 +251,18 @@ class YOLO(nn.Module):
                     if self.iteration * self.batch_size < 12800:
                         loss['total'] += loss['bias']
                     loss['total'].backward()
-                    weights = np.arange(1, 1 + len(batch_loss))
-                    disp_str = ' Training Loss: {:.6f}, '.format(np.average(batch_loss, weights=weights)) + \
-                               ' Avg IOU: {:.4f},  '.format(np.average(batch_stats['avg_obj_iou'], weights=weights)) + \
-                               ' Avg P|Obj: {:.4f},  '.format(np.average(batch_stats['avg_pobj'], weights=weights)) + \
-                               ' Avg P|Noobj: {:.4f},  '.format(np.average(batch_stats['avg_pnoobj'], weights=weights)) + \
-                               ' Avg Class: {:.4f}, '.format(np.average(batch_stats['avg_class'], weights=weights)) + \
+                    weights_0 = np.arange(1, 1 + len(batch_loss))
+                    weights_1 = np.arange(1, 1 + len(batch_stats['avg_pobj']))
+                    disp_str = ' Training Loss: {:.6f}, '.format(np.average(batch_loss,
+                                                                            weights=weights_0)) + \
+                               ' Avg IOU: {:.4f},  '.format(np.average(batch_stats['avg_obj_iou'],
+                                                                       weights=weights_1)) + \
+                               ' Avg P|Obj: {:.4f},  '.format(np.average(batch_stats['avg_pobj'],
+                                                                         weights=weights_1)) + \
+                               ' Avg P|Noobj: {:.4f},  '.format(np.average(batch_stats['avg_pnoobj'],
+                                                                           weights=weights_1)) + \
+                               ' Avg Class: {:.4f}, '.format(np.average(batch_stats['avg_class'],
+                                                                        weights=weights_1)) + \
                                ' Iteration: {:d}'.format(self.iteration)
                     inner.set_postfix_str(disp_str)
                     torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=1., norm_type='inf')
@@ -275,21 +282,21 @@ class YOLO(nn.Module):
                 val_data.step()
                 all_val_loss.append(loss)
                 all_val_stats.append(val_stats)
-                disp_str = ' Training Loss: {:.6f}, '.format(np.average(batch_loss, weights=weights)) + \
-                           ' Avg IOU: {:.4f},  '.format(np.average(batch_stats['avg_obj_iou'], weights=weights)) + \
-                           ' Avg P|Obj: {:.4f},  '.format(np.average(batch_stats['avg_pobj'], weights=weights)) + \
-                           ' Avg P|Noobj: {:.4f},  '.format(np.average(batch_stats['avg_pnoobj'], weights=weights)) + \
-                           ' Avg Class: {:.4f}, '.format(np.average(batch_stats['avg_class'], weights=weights)) + \
+                disp_str = ' Training Loss: {:.6f}, '.format(np.average(batch_loss, weights=weights_0)) + \
+                           ' Avg IOU: {:.4f},  '.format(np.average(batch_stats['avg_obj_iou'], weights=weights_1)) + \
+                           ' Avg P|Obj: {:.4f},  '.format(np.average(batch_stats['avg_pobj'], weights=weights_1)) + \
+                           ' Avg P|Noobj: {:.4f},  '.format(np.average(batch_stats['avg_pnoobj'], weights=weights_1)) + \
+                           ' Avg Class: {:.4f}, '.format(np.average(batch_stats['avg_class'], weights=weights_1)) + \
                            ' Validation Loss: {:.6f}'.format(all_val_loss[-1])
                 inner.set_postfix_str(disp_str)
-                with open('training_loss.txt', 'a') as fl:
+                with open('{}_training_loss.txt'.format(self.name), 'a') as fl:
                     fl.writelines('Epoch: {} '.format(epoch) + disp_str + '\n')
             else:
-                disp_str = ' Training Loss: {:.6f}, '.format(np.average(batch_loss, weights=weights)) + \
-                           ' Avg IOU: {:.4f},  '.format(np.average(batch_stats['avg_obj_iou'], weights=weights)) + \
-                           ' Avg P|Obj: {:.4f},  '.format(np.average(batch_stats['avg_pobj'], weights=weights)) + \
-                           ' Avg P|Noobj: {:.4f},  '.format(np.average(batch_stats['avg_pnoobj'], weights=weights)) + \
-                           ' Avg Class: {:.4f}'.format(np.average(batch_stats['avg_class'], weights=weights))
+                disp_str = ' Training Loss: {:.6f}, '.format(np.average(batch_loss, weights=weights_0)) + \
+                           ' Avg IOU: {:.4f},  '.format(np.average(batch_stats['avg_obj_iou'], weights=weights_1)) + \
+                           ' Avg P|Obj: {:.4f},  '.format(np.average(batch_stats['avg_pobj'], weights=weights_1)) + \
+                           ' Avg P|Noobj: {:.4f},  '.format(np.average(batch_stats['avg_pnoobj'], weights=weights_1)) + \
+                           ' Avg Class: {:.4f}'.format(np.average(batch_stats['avg_class'], weights=weights_1))
                 inner.set_postfix_str(disp_str)
             # if val_data is not None:
             #     outer.set_postfix_str(' Training Loss: {:.6f},  Validation Loss: {:.6f}'.format(train_loss[-1],
@@ -545,13 +552,12 @@ class YOLO(nn.Module):
             weights = weights[1:]
 
         ptr = 0
+        i = 0
 
-        if not only_imagenet:
-            layers = len(self.layers)
-        else:
-            layers = len(self.layers) - 3
+        while ptr < len(weights):
 
-        for i in range(layers):
+            if only_imagenet and ptr == len(weights) - 1000 * 1024 - 1000:
+                break
 
             module_type = self.blocks[i]["type"]
 
@@ -600,6 +606,7 @@ class YOLO(nn.Module):
                 conv_weights = conv_weights.view_as(conv_layer.weight.data)
 
                 conv_layer.weight.data.copy_(conv_weights)
+            i += 1
 
         if not only_imagenet:
             assert ptr == len(weights), 'Weights file does not match model.'
