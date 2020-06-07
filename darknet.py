@@ -3,7 +3,6 @@ import pickle
 import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-from utils import NUM_WORKERS
 from utils import jaccard, xywh2xyxy, non_maximum_suppression, to_numpy_image, add_bbox_to_image, export_prediction
 from layers import *
 
@@ -15,11 +14,11 @@ LAMBDA_NOOBJ = 1.
 USE_CROSS_ENTROPY = False
 
 
-class YOLOv2(nn.Module):
+class YOLO(nn.Module):
 
     def __init__(self, model, name='YOLOv2', device='cuda'):
 
-        super(YOLOv2, self).__init__()
+        super(YOLO, self).__init__()
 
         self.net_info = {}
         self.blocks = []
@@ -35,12 +34,13 @@ class YOLOv2(nn.Module):
         self.num_classes = int(self.blocks[-1]['classes'])
         self.num_features = 5 + self.num_classes
 
+        self.strides = self.calculate_strides()
+
         self.cache = {}
         self.detection_layers = []
         self.cache_layers = []
         self.build_modules()
 
-        self.strides = self.calculate_strides()
         self.grid_sizes = [[-1, -1] for _ in range(len(self.detection_layers))]
         self.set_grid_sizes()
 
@@ -49,8 +49,10 @@ class YOLOv2(nn.Module):
         self.lr = float(self.net_info['learning_rate'])
         self.momentum = float(self.net_info['momentum'])
         self.weight_decay = float(self.net_info['decay'])
-        self.rescore = True if self.blocks[-1]['rescore'] is '1' else False
-        self.noobj_iou_threshold = float(self.blocks[-1]['thresh'])
+        try:
+            self.noobj_iou_threshold = float(self.blocks[-1]['thresh'])
+        except KeyError:
+            self.noobj_iou_threshold = float(self.blocks[-1]['ignore_thresh'])
         self.multi_scale = True if self.blocks[-1]['random'] is '1' else False
 
         self.steps = list(map(float, self.net_info['steps'].split(',')))
@@ -159,12 +161,8 @@ class YOLOv2(nn.Module):
                 l['class'] *= LAMBDA_CLASS / batch_size
                 stats['avg_class'].append(torch.exp(p[obj_mask, 5 + t_long]).mean().item())
 
-                if self.rescore:
-                    l['object'] = nn.MSELoss(reduction='sum')(p[obj_mask, 4],
-                                                              all_ious[obj_mask, torch.arange(num_obj)].detach())
-                else:
-                    l['object'] = nn.MSELoss(reduction='sum')(p[obj_mask, 4],
-                                                              t[obj_mask, 4])
+                l['object'] = nn.MSELoss(reduction='sum')(p[obj_mask, 4],
+                                                          all_ious[obj_mask, torch.arange(num_obj)].detach())
                 l['object'] *= LAMBDA_OBJ / batch_size
                 stats['avg_pobj'].append(p[obj_mask, 4].mean().item())
 
@@ -199,7 +197,7 @@ class YOLOv2(nn.Module):
         return loss, stats
 
     def fit(self, train_data, optimizer, scheduler=None, epochs=1,
-            val_data=None, checkpoint_frequency=100):
+            val_data=None, checkpoint_frequency=100, num_workers=0):
 
         if scheduler is not None:
             scheduler.last_epoch = self.iteration
@@ -208,7 +206,7 @@ class YOLOv2(nn.Module):
 
         train_dataloader = DataLoader(dataset=train_data,
                                       batch_size=train_data.batch_size,
-                                      num_workers=NUM_WORKERS)
+                                      num_workers=num_workers)
 
         all_train_loss = []
         all_train_stats = []
@@ -217,7 +215,7 @@ class YOLOv2(nn.Module):
 
         if val_data is not None:
             self.eval()
-            loss, val_stats = self.calculate_loss(val_data, val_data.batch_size, fraction=.5)
+            loss, val_stats = self.calculate_loss(val_data, val_data.batch_size, .5, num_workers)
             self.train()
             val_data.step()
             all_val_loss.append(loss)
@@ -272,7 +270,7 @@ class YOLOv2(nn.Module):
             train_data.step(self.multi_scale)
             if val_data is not None:
                 self.eval()
-                loss, val_stats = self.calculate_loss(val_data, val_data.batch_size, val_stats, fraction=.5)
+                loss, val_stats = self.calculate_loss(val_data, val_data.batch_size, val_stats, .5, num_workers)
                 self.train()
                 val_data.step()
                 all_val_loss.append(loss)
@@ -326,7 +324,7 @@ class YOLOv2(nn.Module):
         """
         pickle.dump(self, open(name, 'wb'), protocol=pickle.HIGHEST_PROTOCOL)
 
-    def calculate_loss(self, data, batch_size, stats=None, fraction=0.1):
+    def calculate_loss(self, data, batch_size, stats=None, fraction=0.1, num_workers=0):
         """
         Calculates the loss for a random partition of a given dataset without
         tracking gradients. Useful for displaying the validation loss during
@@ -350,7 +348,7 @@ class YOLOv2(nn.Module):
         """
         val_dataloader = DataLoader(dataset=data,
                                     batch_size=batch_size,
-                                    num_workers=NUM_WORKERS)
+                                    num_workers=num_workers)
 
         losses = []
         if stats is None:
@@ -463,8 +461,7 @@ class YOLOv2(nn.Module):
                 if second > 0:
                     second = second - index
 
-                route_layer = RouteLayer(index, self.cache, first, second)
-                module.add_module('route_{0}'.format(index), route_layer)
+                route_layer = RouteLayer(index, first, second, self.cache)
 
                 self.cache_layers.append(index + first)
                 if second < 0:
@@ -474,10 +471,18 @@ class YOLOv2(nn.Module):
                     filters = output_filters[index + first] + output_filters[index + second]
                 else:
                     filters = output_filters[index + first]
+                module.add_module('route_{0}'.format(index), route_layer)
 
             elif block['type'] == 'shortcut':
-                shortcut_layer = EmptyLayer()
-                module.add_module('shortcut_{0}'.format(index), shortcut_layer)
+                source = int(block['from'])
+                activation = block['activation']
+                route_layer = ShortcutLayer(index, source, self.cache)
+                self.cache_layers.append(index + source)
+                module.add_module('route_{0}'.format(index), route_layer)
+                if activation == 'linear':
+                    pass
+                else:
+                    raise AssertionError('Unknown activation for shortcut layer.')
 
             elif block['type'] == 'reorg':
                 stride = int(block['stride'])
@@ -507,6 +512,8 @@ class YOLOv2(nn.Module):
                 anchors = [(anchors[i] / width, anchors[i + 1] / height)
                            for i in range(0, len(anchors), 2)]
                 anchors = [anchors[i] for i in mask]
+                i = len(self.detection_layers)
+                anchors = np.array(anchors) * np.array(self.default_image_size) / self.strides[i]
                 detection_layer = YOLOLayer(self, anchors)
                 self.detection_layers.append(index)
                 module.add_module('detection_{}'.format(index), detection_layer)
@@ -639,10 +646,20 @@ class YOLOv2(nn.Module):
         stride = 1.
         strides = []
         for block in self.blocks:
-            if block['type'] == 'maxpool' or block['type'] == 'convolutional':
+            if block['type'] == 'maxpool':
                 size = int(block['size'])
                 s = int(block['stride'])
                 div = (1. - size) / s + 1.
+                if div > 0:
+                    stride /= div
+            if block['type'] == 'convolutional' and int(block['stride']) > 1:
+                s = int(block['stride'])
+                div = 1. / s
+                if div > 0:
+                    stride /= div
+            if block['type'] == 'upsample':
+                s = int(block['stride'])
+                div = 1. * s
                 if div > 0:
                     stride /= div
             if block['type'] == 'region' or block['type'] == 'yolo':
@@ -675,6 +692,8 @@ class YOLOv2(nn.Module):
         conf_ = []
 
         for i, predictions_ in enumerate(predictions):
+            if i not in [0, 1, 2]:  # Use this for specifying only a subset of detectors
+                continue
             predictions_ = predictions_.permute(0, 2, 3, 1)
 
             for j, prediction in enumerate(predictions_):
@@ -750,13 +769,13 @@ class YOLOv2(nn.Module):
                    torch.tensor([], device=self.device), \
                    []
 
-    def predict(self, dataset, confidence_threshold=0.1, overlap_threshold=0.5, show=True, export=True):
+    def predict(self, dataset, confidence_threshold=0.1, overlap_threshold=0.5, show=True, export=True, num_workers=0):
 
         self.eval()
 
         dataloader = DataLoader(dataset=dataset,
                                 batch_size=dataset.batch_size,
-                                num_workers=NUM_WORKERS)
+                                num_workers=num_workers)
 
         image_idx_ = []
         bboxes_ = []
@@ -769,8 +788,10 @@ class YOLOv2(nn.Module):
                       leave=True) as pbar:
                 for data in dataloader:
                     images, image_info = data
+                    # images, image_info, targets = data
                     images = images.to(self.device)
                     predictions = self(images)
+                    # predictions = [t.to(self.device) for t in targets]
                     bboxes, classes, confidences, image_idx = self.process_bboxes(predictions,
                                                                                   image_info,
                                                                                   confidence_threshold,
@@ -791,6 +812,8 @@ class YOLOv2(nn.Module):
                                 mask = np.array(image_idx) == idx
                                 for bbox, cls, confidence in zip(bboxes[mask], classes[mask], confidences[mask]):
                                     name = dataset.classes[cls]
+                                    # coco = ['person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train', 'truck', 'boat', 'traffic light', 'fire hydrant', 'stop sign', 'parking meter', 'bench', 'bird', 'cat', 'dog', 'horse', 'sheep', 'cow', 'elephant', 'bear', 'zebra', 'giraffe', 'backpack', 'umbrella', 'handbag', 'tie', 'suitcase', 'frisbee', 'skis', 'snowboard', 'sports ball', 'kite', 'baseball bat', 'baseball glove', 'skateboard', 'surfboard', 'tennis racket', 'bottle', 'wine glass', 'cup', 'fork', 'knife', 'spoon', 'bowl', 'banana', 'apple', 'sandwich', 'orange', 'broccoli', 'carrot', 'hot dog', 'pizza', 'donut', 'cake', 'chair', 'couch', 'potted plant', 'bed', 'dining table', 'toilet', 'tv', 'laptop', 'mouse', 'remote', 'keyboard', 'cell phone', 'microwave', 'oven', 'toaster', 'sink', 'refrigerator', 'book', 'clock', 'vase', 'scissors', 'teddy bear', 'hair drier', 'toothbrush']
+                                    # name = coco[cls]
                                     add_bbox_to_image(image, bbox, confidence, name)
                             plt.imshow(image)
                             plt.axis('off')

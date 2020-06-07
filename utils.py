@@ -8,9 +8,6 @@ from functools import reduce
 from matplotlib import cm
 
 
-NUM_WORKERS = 0
-
-
 # Original author: Francisco Massa:
 # https://github.com/fmassa/object-detection.torch
 # Ported to PyTorch by Max deGroot (02/01/2017)
@@ -280,6 +277,8 @@ def add_bbox_to_image(image, bbox, confidence, cls, thickness=3, color=None):
     # Display the label at the top of the bounding box
     label_size, base_line = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
     ymax = max(ymax, label_size[1])
+    if ymax + base_line + round(1.5 * label_size[1]) > image.shape[0]:
+        ymax -= base_line + round(1.5 * label_size[1])
     cv2.rectangle(image,
                   (xmin, ymax),
                   (xmin + round(1.5 * label_size[0]),
@@ -554,7 +553,7 @@ def main():
                           root_dir=['../../../Data/SS/'],
                           dataset=['train'],
                           skip_truncated=False,
-                          init=3.,
+                          init=3,
                           weighted=True,
                           device=device)
 

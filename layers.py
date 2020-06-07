@@ -82,7 +82,7 @@ class ReorgLayer(nn.Module):
 
 
 class RouteLayer(nn.Module):
-    def __init__(self, index, cache, first, second):
+    def __init__(self, index, first, second, cache):
         super(RouteLayer, self).__init__()
         self.index = index
         self.cache = cache
@@ -94,6 +94,18 @@ class RouteLayer(nn.Module):
             x = self.cache[self.index + self.first]
         else:
             x = torch.cat((self.cache[self.index + self.first], self.cache[self.index + self.second]), 1)
+        return x
+
+
+class ShortcutLayer(nn.Module):
+    def __init__(self, index, source, cache):
+        super(ShortcutLayer, self).__init__()
+        self.index = index
+        self.cache = cache
+        self.source = source
+
+    def forward(self, x):
+        x = x + self.cache[self.index + self.source]
         return x
 
 

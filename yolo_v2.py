@@ -3,9 +3,10 @@
 
 import torchsummary
 from torch import optim
-from dataset import PascalDatasetYOLO, SSDatasetYOLO
+from dataset import PascalDatasetYOLO
+from miscellaneous import SSDatasetYOLO
 from layers import *
-from darknet import YOLOv2
+from darknet import YOLO
 from utils import step_decay_scheduler, set_random_seed
 import pickle
 
@@ -21,13 +22,13 @@ if __name__ == '__main__':
     freeze = False
     predict = True
 
-    model = YOLOv2(name='YOLOv2-tiny',
-                       model='models/yolov2-tiny-voc.cfg',
+    model = YOLO(name='YOLOv3',
+                       # model='models/yolov2-tiny-voc.cfg',
                        # model='models/yolov2-voc.cfg',
-                       # model='models/yolov3-voc.cfg',
+                       model='models/yolov3.cfg',
                        device=device)
 
-    torchsummary.summary(model, (model.channels, *model.default_image_size), device=device)
+    # torchsummary.summary(model, (model.channels, *model.default_image_size), device=device)
 
     train_data = PascalDatasetYOLO(root_dir=['../../../Data/VOCdevkit/VOC2007/',
                                              '../../../Data/VOCdevkit/VOC2012/'],
@@ -37,7 +38,7 @@ if __name__ == '__main__':
                                    batch_size=model.batch_size // model.subdivisions,
                                    image_size=model.default_image_size,
                                    anchors=model.anchors,
-                                   strides=32,
+                                   strides=model.strides,
                                    do_transforms=True,
                                    multi_scale=model.multi_scale
                                    )
@@ -48,6 +49,7 @@ if __name__ == '__main__':
                                  batch_size=model.batch_size // model.subdivisions,
                                  image_size=model.default_image_size,
                                  anchors=model.anchors,
+                                 strides=model.strides,
                                  do_transforms=True,
                                  multi_scale=model.multi_scale
                                  )
@@ -60,6 +62,7 @@ if __name__ == '__main__':
                                   batch_size=model.batch_size // model.subdivisions,
                                   image_size=model.default_image_size,
                                   anchors=model.anchors,
+                                  strides=model.strides,
                                   do_transforms=False,
                                   multi_scale=False,
                                   return_targets=False
@@ -102,10 +105,11 @@ if __name__ == '__main__':
     #                           return_targets=False
     #                           )
 
+    model.load_weights('models/yolov3.weights')
     # model.load_weights('models/yolov2-voc.weights')
     # model.load_weights('models/darknet.weights', only_imagenet=True)
     # model.load_weights('models/yolov2-tiny.conv.13', only_imagenet=True)
-    model.load_weights('models/yolov2-tiny-voc.weights')
+    # model.load_weights('models/yolov2-tiny-voc.weights')
     # model.load_weights('models/tiny-yolo-voc_final.weights')
     # model = pickle.load(open('YOLOv2-tiny_120.pkl', 'rb'))
     # model.iteration = 90
@@ -147,7 +151,7 @@ if __name__ == '__main__':
         # model = pickle.load(open('YOLOv2-tiny_ss_120.pkl', 'rb'))
 
         model.predict(dataset=test_data,
-                      confidence_threshold=.5,
+                      confidence_threshold=.3,
                       overlap_threshold=.45,
                       show=True,
                       export=False
