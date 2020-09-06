@@ -14,7 +14,7 @@ if __name__ == '__main__':
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-    train = True
+    train = False
     predict = True
 
     model = YOLO(name='YOLOv3-Tiny',

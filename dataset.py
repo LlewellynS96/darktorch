@@ -106,6 +106,8 @@ class PascalDatasetYOLO(Dataset):
         self.images = list(set(self.images))  # Remove duplicates.
         self.images.sort()
 
+        # self.images = [(0, str(3000+i)) for i in range(10)]
+
         self.n = len(self.images)
 
         self.image_size = None
@@ -272,7 +274,7 @@ class PascalDatasetYOLO(Dataset):
             return image, image_info
 
     def __len__(self):
-        return len(self.images)
+        return self.n
 
     def disable_multiscale(self):
         self.multi_scale = False

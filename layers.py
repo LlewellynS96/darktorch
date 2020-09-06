@@ -1,14 +1,5 @@
 import torch
 from torch import nn
-import torch.nn.functional as F
-
-
-class EmptyLayer(nn.Module):
-    def __init__(self):
-        super(EmptyLayer, self).__init__()
-
-    def forward(self, x):
-        pass
 
 
 class YOLOLayer(nn.Module):
@@ -106,12 +97,4 @@ class ShortcutLayer(nn.Module):
 
     def forward(self, x):
         x = x + self.cache[self.index + self.source]
-        return x
-
-
-class EmptyModule(nn.Module):
-    def __init__(self):
-        super(EmptyModule, self).__init__()
-
-    def forward(self, x):
         return x

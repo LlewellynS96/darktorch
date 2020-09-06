@@ -2,9 +2,15 @@ import numpy as np
 import pickle
 import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader
+import torch.nn.functional as F
 from tqdm import tqdm
 from utils import jaccard, xywh2xyxy, non_maximum_suppression, to_numpy_image, add_bbox_to_image, export_prediction
 from layers import *
+
+from conv import ComplexConv2d, ComplexToRealConv2d
+from bn import ComplexBatchNorm2d
+from pool import ComplexMaxPool2d
+from activations import ModReLu
 
 LAMBDA_COORD = 5.
 LAMBDA_OBJ = 1.
@@ -84,6 +90,7 @@ class YOLO(nn.Module):
         assert x.dim() == 4
 
         self.set_image_size(x.shape[-2:])
+        # x = x.unsqueeze(2)
 
         output = []
         for i, layer in enumerate(self.layers):
@@ -162,8 +169,10 @@ class YOLO(nn.Module):
                 l['class'] *= LAMBDA_CLASS / batch_size
                 stats['avg_class'].append(torch.exp(p[obj_mask, 5 + t_long]).mean().item())
 
+                # l['object'] = nn.MSELoss(reduction='sum')(p[obj_mask, 4],
+                #                                           all_ious[obj_mask, torch.arange(num_obj)].detach())
                 l['object'] = nn.MSELoss(reduction='sum')(p[obj_mask, 4],
-                                                          all_ious[obj_mask, torch.arange(num_obj)].detach())
+                                                          t[obj_mask, 4])
                 l['object'] *= LAMBDA_OBJ / batch_size
                 stats['avg_pobj'].append(p[obj_mask, 4].mean().item())
 
@@ -204,6 +213,7 @@ class YOLO(nn.Module):
             scheduler.last_epoch = self.iteration
 
         self.train()
+        self.freeze_bn()
 
         train_dataloader = DataLoader(dataset=train_data,
                                       batch_size=train_data.batch_size,
@@ -216,8 +226,9 @@ class YOLO(nn.Module):
 
         if val_data is not None:
             self.eval()
-            loss, val_stats = self.calculate_loss(val_data, val_data.batch_size, None, .5, num_workers)
+            loss, val_stats = self.calculate_loss(val_data, val_data.batch_size, None, .2, num_workers)
             self.train()
+            self.freeze_bn()
             val_data.step()
             all_val_loss.append(loss)
             all_val_stats.append(val_stats)
@@ -277,8 +288,9 @@ class YOLO(nn.Module):
             train_data.step(self.multi_scale)
             if val_data is not None:
                 self.eval()
-                loss, val_stats = self.calculate_loss(val_data, val_data.batch_size, val_stats, .5, num_workers)
+                loss, val_stats = self.calculate_loss(val_data, val_data.batch_size, val_stats, .2, num_workers)
                 self.train()
+                self.freeze_bn()
                 val_data.step()
                 all_val_loss.append(loss)
                 all_val_stats.append(val_stats)
@@ -772,7 +784,7 @@ class YOLO(nn.Module):
             return bboxes, classes, confidence, image_idx
         else:
             return torch.tensor([], device=self.device), \
-                   torch.tensor([], device=self.device), \
+                   torch.tensor([], dtype=torch.long, device=self.device), \
                    torch.tensor([], device=self.device), \
                    []
 
@@ -880,9 +892,21 @@ class YOLO(nn.Module):
                 for param in layer.parameters():
                     param.requires_grad = False
 
+    def mini_freeze(self, n=13):
+        for layer in list(self.layers)[:n]:
+            for param in layer.parameters():
+                param.requires_grad = False
+
     def unfreeze(self):
         for param in self.parameters():
             param.requires_grad = True
+
+    def freeze_bn(self):
+        for module in self.modules():
+            if isinstance(module, nn.BatchNorm2d):
+                for param in module.parameters():
+                    param.requires_grad = False
+                module.eval()
 
     def get_trainable_parameters(self):
         """
@@ -899,3 +923,11 @@ class YOLO(nn.Module):
                 trainable_parameters.append(param)
 
         return trainable_parameters
+
+    def make_complex(self):
+        self.layers[0][0] = ComplexConv2d(1, 16, 3, 1, 1, 1, False)
+        self.layers[0][1] = ComplexBatchNorm2d(16)
+        self.layers[0][2] = ModReLu(16)
+        self.layers[1][0] = ComplexMaxPool2d(2, 2)
+        self.layers[2][0] = ComplexToRealConv2d(16, 32, 3, 1, 1, 1, False)
+

@@ -386,56 +386,6 @@ def get_annotations(annotations_dir, img):
     return annotations
 
 
-def find_best_anchors(classes, root_dir, dataset, k=5, max_iter=20, skip_truncated=True, init=13, weighted=True, device='cuda'):
-
-    annotations_dir = [os.path.join(r, 'Annotations') for r in root_dir]
-    sets_dir = [os.path.join(r, 'ImageSets', 'Main') for r in root_dir]
-
-    images = []
-
-    for d in range(len(dataset)):
-        for cls in classes:
-            file = os.path.join(sets_dir[d], '{}_{}.txt'.format(cls, dataset[d]))
-            with open(file) as f:
-                for line in f:
-                    image_desc = line.split()
-                    if image_desc[1] == '1':
-                        images.append((d, image_desc[0]))
-
-    images = list(set(images))
-    bboxes = []
-
-    for image in images:
-        annotations = get_annotations(annotations_dir[image[0]], image[1])
-        for annotation in annotations:
-            name, height, width, xmin, ymin, xmax, ymax, truncated, difficult = annotation
-            if skip_truncated and truncated:
-                continue
-            width = (xmax - xmin) / width
-            height = (ymax - ymin) / height
-            for i in [2. * d + 1 for d in range(4, 10)]:
-                bboxes.append([0., 0., i * width, i * height])
-
-    bboxes = torch.tensor(bboxes, device=device)
-    anchors = torch.tensor(([0., 0., init, init] * np.random.random((k, 4))).astype(dtype=np.float32), device=device)
-
-    for _ in range(max_iter):
-        ious = jaccard(bboxes, anchors)
-        iou_max, idx = torch.max(ious, dim=1)
-        for i in range(k):
-            if weighted:
-                weights = (torch.tensor([1.], device=device) - iou_max[idx == i, None]) ** 2
-                anchors[i] = torch.sum(bboxes[idx == i] * weights, dim=0) / torch.sum(weights)  # Weighted k-means
-
-            else:
-                anchors[i] = torch.mean(bboxes[idx == i], dim=0)  # Normal k-means
-
-        sort = torch.argsort(anchors[:, 2], dim=0)
-        anchors = anchors[sort]
-
-    return anchors[:, 2:]
-
-
 def get_letterbox_padding(size, desired_size):
     scale = min([float(dim) / max(size) for dim in desired_size])
     new_size = np.array([dim * scale for dim in size], dtype=np.int)
@@ -535,30 +485,7 @@ def warmup_scheduler(optimizer, initial_lr=None, warm_up=1):
 
 
 def main():
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
-
-    classes = read_classes('../../../Data/VOCdevkit/voc.names')
-    # a = find_best_anchors(classes,
-    #                       k=5,
-    #                       max_iter=1000,
-    #                       root_dir=['../../../Data/VOCdevkit/VOC2007/', '../../../Data/VOCdevkit/VOC2012/'],
-    #                       dataset=['trainval'] * 2,
-    #                       skip_truncated=False,
-    #                       weighted=True,
-    #                       device=device)
-    classes = read_classes('../../../Data/SS/ss.names')
-    a = find_best_anchors(classes,
-                          k=5,
-                          max_iter=1000,
-                          root_dir=['../../../Data/SS/'],
-                          dataset=['train'],
-                          skip_truncated=False,
-                          init=3,
-                          weighted=True,
-                          device=device)
-
-    for x, y in a:
-        print('{:.2f},{:.2f}, '.format(x, y), end='')
+    pass
 
 
 def set_random_seed(x):

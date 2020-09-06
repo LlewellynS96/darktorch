@@ -1,15 +1,17 @@
 import os
 import random
+import pickle
 import torch
 import numpy as np
 import scipy.signal
 import matplotlib.pyplot as plt
 from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
+from PIL import Image
+import gizeh
 from darknet import YOLO
 from utils import export_prediction, jaccard, read_classes, get_annotations, to_numpy_image, add_bbox_to_image, set_random_seed
 from dataset import PascalDatasetYOLO
-
 
 USE_LETTERBOX = False
 IOU_MATCH_THRESHOLD = 0.05
@@ -20,7 +22,7 @@ MULTI_SCALE_FREQ = 10
 class SSDatasetYOLO(Dataset):
 
     def __init__(self, anchors, class_file, root_dir, mu, sigma, mode, dataset, batch_size=1, skip_truncated=False, do_transforms=False,
-                 image_size=(512, 512), skip_difficult=True, stride=32, return_targets=True):
+                 image_size=(512, 512), skip_difficult=True, strides=32, return_targets=True):
 
         self.classes = read_classes(class_file)
 
@@ -44,14 +46,20 @@ class SSDatasetYOLO(Dataset):
         self.skip_truncated = skip_truncated
         self.skip_difficult = skip_difficult
 
-        self.anchors = anchors.clone().detach().cpu()
-        self.num_anchors = len(self.anchors)
+        self.anchors = [a.clone().detach().cpu() for a in anchors]
+        self.num_anchors = [len(a) for a in self.anchors]
 
         self.do_transforms = do_transforms
         self.return_targets = return_targets
 
         self.batch_size = batch_size
-        self.stride = stride
+        if isinstance(strides, int):
+            strides = [strides]
+        self.strides = strides
+
+        assert len(anchors) == len(strides)
+        self.num_detectors = len(anchors)
+
         self.default_image_size = image_size
 
         self.mode = mode
@@ -73,7 +81,9 @@ class SSDatasetYOLO(Dataset):
         self.n = len(self.data)
 
         self.image_size = np.repeat(self.default_image_size, self.n).reshape(-1, 2)
-        self.grid_size = np.repeat([s // self.stride for s in self.default_image_size], self.n).reshape(-1, 2)
+        self.grid_sizes = []
+        for ss in self.strides:
+            self.grid_sizes.append(np.repeat([s // ss for s in self.default_image_size], self.n).reshape(-1, 2))
 
     def __getitem__(self, index):
         """
@@ -115,6 +125,8 @@ class SSDatasetYOLO(Dataset):
             data = [np.abs(stft) ** 2, np.angle(stft)]
         elif self.mode == 'spectrogram_ap_db':
             data = [10. * np.log10(np.abs(stft) ** 2), np.angle(stft)]
+        elif self.mode == 'stft':
+            data = np.abs(stft)
         elif self.mode == 'stft_iq':
             data = [stft.real, stft.imag]
         elif self.mode == 'stft_ap':
@@ -140,18 +152,20 @@ class SSDatasetYOLO(Dataset):
         if self.return_targets:
             annotations = get_annotations(self.annotations_dir[dataset], img)
             random.shuffle(annotations)
-            target = np.zeros((self.grid_size[index, 1], self.grid_size[index, 0], self.num_anchors * self.num_features),
-                              dtype=np.float32)
-            cell_dims = self.stride, self.stride
+            target = [np.zeros((self.grid_sizes[i][index, 1],
+                                self.grid_sizes[i][index, 0],
+                                self.num_anchors[i] * self.num_features),
+                               dtype=np.float32) for i in range(self.num_detectors)]
+            cell_dims = np.array([[self.strides[i], self.strides[i]] for i in range(self.num_detectors)])
 
-            anchors = torch.zeros((self.num_anchors, 4))
-            anchors[:, 2:] = self.anchors.clone()
-
-            target[:, np.arange(self.grid_size[index][0]), 0::self.num_features] = np.arange(self.grid_size[index][0])[
-                                                                                   None, :, None] + 0.5
-            target[:, :, 1::self.num_features] = np.arange(self.grid_size[index][1])[:, None, None] + 0.5
-            target[:, :, 2::self.num_features] = anchors[:, 2]
-            target[:, :, 3::self.num_features] = anchors[:, 3]
+            anchors = [torch.zeros((n, 4)) for n in self.num_anchors]
+            for i, (a, t) in enumerate(zip(anchors, target)):
+                a[:, 2:] = self.anchors[i].clone()
+                t[:, np.arange(self.grid_sizes[i][index][0]), 0::self.num_features] = \
+                    np.arange(self.grid_sizes[i][index][0])[None, :, None] + 0.5
+                t[:, :, 1::self.num_features] = np.arange(self.grid_sizes[i][index][1])[:, None, None] + 0.5
+                t[:, :, 2::self.num_features] = a[:, 2]
+                t[:, :, 3::self.num_features] = a[:, 3]
 
             # For each object in image.
             for annotation in annotations:
@@ -169,42 +183,51 @@ class SSDatasetYOLO(Dataset):
                 xmin, xmax, ymin, ymax = np.round(xmin), np.round(xmax), np.round(ymin), np.round(ymax)
                 if xmax == xmin or ymax == ymin:
                     continue
-                xmin /= cell_dims[0]
-                xmax /= cell_dims[0]
-                ymin /= cell_dims[1]
-                ymax /= cell_dims[1]
-                if xmax - xmin < (SMALL_THRESHOLD * cell_dims[0]) or ymax - ymin < (SMALL_THRESHOLD * cell_dims[1]):
+                xmin /= cell_dims[:, 0]
+                xmax /= cell_dims[:, 0]
+                ymin /= cell_dims[:, 1]
+                ymax /= cell_dims[:, 1]
+                if all(xmax - xmin < (SMALL_THRESHOLD * cell_dims[:, 0])):
                     continue
-                idx = int(np.floor((xmax + xmin) / 2.)), int(np.floor((ymax + ymin) / 2.))
+                if all(ymax - ymin < (SMALL_THRESHOLD * cell_dims[:, 1])):
+                    continue
+                idx = np.floor((xmax + xmin) / 2.), np.floor((ymax + ymin) / 2.)
+                idx = np.array(idx, dtype=np.int).T
 
-                ground_truth = torch.tensor([[xmin, ymin, xmax, ymax]], dtype=torch.float32)
-                anchors = torch.zeros((self.num_anchors, 4))
-                anchors[:, 2:] = self.anchors.clone()
-
-                anchors[:, 0::2] += xmin
-                anchors[:, 1::2] += ymin
+                ground_truth = torch.tensor([xmin, ymin, xmax, ymax], dtype=torch.float32).t()
+                anchors = [torch.zeros((self.num_anchors[i], 4)) for i in range(self.num_detectors)]
+                for i in range(self.num_detectors):
+                    anchors[i][:, 2:] = self.anchors[i].clone()
+                    anchors[i][:, 0::2] += xmin[i]
+                    anchors[i][:, 1::2] += ymin[i]
+                anchors = torch.cat(anchors)
                 ious = jaccard(ground_truth, anchors)
                 if ious.max() < IOU_MATCH_THRESHOLD:
                     continue
-                assign = np.argmax(ious)
+                max_iou = 0.
+                cumsum_detectors = np.cumsum([0] + self.num_anchors)
+                for i in range(self.num_detectors):
+                    if ious[i, cumsum_detectors[i]:cumsum_detectors[i + 1]].max() > max_iou:
+                        l = i
+                        d = ious[i, cumsum_detectors[i]:cumsum_detectors[i + 1]].argmax()
+                        max_iou = ious[i, cumsum_detectors[i]:cumsum_detectors[i + 1]].max()
 
-                target[idx[1], idx[0], assign * self.num_features + 0] = (xmin + xmax) / 2.
-                target[idx[1], idx[0], assign * self.num_features + 1] = (ymin + ymax) / 2.
-                target[idx[1], idx[0], assign * self.num_features + 2] = xmax - xmin
-                target[idx[1], idx[0], assign * self.num_features + 3] = ymax - ymin
-                target[idx[1], idx[0], assign * self.num_features + 4] = 1.
-                target[idx[1], idx[0], assign * self.num_features + 5:(assign + 1) * self.num_features] = \
+                target[l][idx[l][1], idx[l][0], d * self.num_features + 0] = (xmin[l] + xmax[l]) / 2.
+                target[l][idx[l][1], idx[l][0], d * self.num_features + 1] = (ymin[l] + ymax[l]) / 2.
+                target[l][idx[l][1], idx[l][0], d * self.num_features + 2] = xmax[l] - xmin[l]
+                target[l][idx[l][1], idx[l][0], d * self.num_features + 3] = ymax[l] - ymin[l]
+                target[l][idx[l][1], idx[l][0], d * self.num_features + 4] = 1.
+                target[l][idx[l][1], idx[l][0], d * self.num_features + 5:(d + 1) * self.num_features] = \
                     self.encode_categorical(name)
 
-            target = torch.tensor(target)
-            target = target.permute(2, 0, 1)
+            target = [torch.tensor(target[i]).permute(2, 0, 1) for i in range(self.num_detectors)]
 
             return data, data_info, target
         else:
             return data, data_info
 
     def __len__(self):
-        return len(self.data)
+        return self.n
 
     def shuffle_data(self):
         random.shuffle(self.data)
@@ -240,10 +263,16 @@ class SSDatasetYOLO(Dataset):
 def show_ground_truth(model,
                       dataset,
                       device='cpu',
+                      classes='../../../Data/SS/ss.names',
                       overlap_threshold=0.5,
                       show=True,
                       export=True,
                       num_workers=0):
+
+    lst_classes = read_classes(classes)
+    colors = create_pascal_label_colormap(len(lst_classes))
+
+    dataset.n = 5
 
     dataloader = DataLoader(dataset=dataset,
                             batch_size=dataset.batch_size,
@@ -266,7 +295,7 @@ def show_ground_truth(model,
                                                                            image_info,
                                                                            1e-5,
                                                                            overlap_threshold,
-                                                                           nms=True)
+                                                                           nms=False)
 
             if show:
                 for i, data in enumerate(zip(image_info['id'], images)):
@@ -277,13 +306,45 @@ def show_ground_truth(model,
                         mu = dataset.mu[0]
                         sigma = dataset.sigma[0]
                         image = to_numpy_image(image[0], size=(width, height), mu=mu, sigma=sigma, normalised=False)
+                    image = gizeh.ImagePattern(np.array(image))
+                    image = gizeh.rectangle(2. * model.default_image_size[0],
+                                            2. * model.default_image_size[1],
+                                            xy=(0, 0),
+                                            fill=image)
+                    pdf = gizeh.PDFSurface('detections/{}.pdf'.format(idx),
+                                           2. * model.default_image_size[0],
+                                           2. * model.default_image_size[1])
+                    image.draw(pdf)
                     mask = np.array(image_idx) == idx
-                    for bbox, cls, confidence in zip(bboxes[mask], classes[mask], confidences[mask]):
-                        name = dataset.classes[cls]
-                        add_bbox_to_image(image, bbox, None, name, 2, [0., 255., 0.])
-                    plt.imshow(image)
-                    plt.axis('off')
-                    plt.show()
+                    for bb, cl, co in zip(bboxes[mask], classes[mask], confidences[mask]):
+                        rect = [[int(bb[0]), int(bb[1])],
+                                [int(bb[2]), int(bb[1])],
+                                [int(bb[2]), int(bb[3])],
+                                [int(bb[0]), int(bb[3])]]
+                        rect = gizeh.polyline(rect, close_path=True, stroke_width=4, stroke=colors[cl])
+                        rect.draw(pdf)
+                    for bb, cl, co in zip(bboxes[mask], classes[mask], confidences[mask]):
+                        w, h = len(lst_classes[cl]) * 7.8, 11
+                        rect = gizeh.rectangle(w,
+                                               h,
+                                               xy=(int(bb[0] + w / 2 - 2),
+                                                   max((int(bb[1] - h / 2 + 5)), 5)),  # - 2)),
+                                               # fill=colors[cl])
+                                               fill=(1, 1, 1, 0.5))
+
+                        rect.draw(pdf)
+                        txt = gizeh.text(lst_classes[cl],
+                                         # 'Helvetica',
+                                         'monospace',
+                                         fontsize=12,
+                                         xy=(int(bb[0]),
+                                             max((int(bb[1]), 5))),  # - 12),
+                                         fill=(0., 0., 0.),
+                                         v_align='center',  # 'bottom',
+                                         h_align='left')
+                        txt.draw(pdf)
+                    pdf.flush()
+                    pdf.finish()
 
             if export:
                 for idx in range(len(images)):
@@ -329,32 +390,239 @@ def show_ground_truth(model,
                []
 
 
-def main():
-    set_random_seed(0)
-    device = 'cpu'
-    # model = YOLO(name='YOLOv2-tiny',
-    #              model='models/yolov2-tiny-voc.cfg',
-    #              device=device)
-    model = YOLO(name='YOLOv3',
-                 model='models/yolov3-voc.cfg',
+def find_best_anchors(classes, root_dir, dataset, k=5, max_iter=20, skip_truncated=True, init=(13, 13), weighted=True, multi_scale=False, device='cuda'):
+
+    annotations_dir = [os.path.join(r, 'Annotations') for r in root_dir]
+    sets_dir = [os.path.join(r, 'ImageSets', 'Main') for r in root_dir]
+
+    images = []
+
+    for d in range(len(dataset)):
+        for cls in classes:
+            file = os.path.join(sets_dir[d], '{}_{}.txt'.format(cls, dataset[d]))
+            with open(file) as f:
+                for line in f:
+                    image_desc = line.split()
+                    if image_desc[1] == '1':
+                        images.append((d, image_desc[0]))
+
+    images = list(set(images))
+    bboxes = []
+
+    for image in images:
+        annotations = get_annotations(annotations_dir[image[0]], image[1])
+        for annotation in annotations:
+            name, height, width, xmin, ymin, xmax, ymax, truncated, difficult = annotation
+            if skip_truncated and truncated:
+                continue
+            width = (xmax - xmin) / width
+            height = (ymax - ymin) / height
+            if multi_scale:
+                for i in [2. * d + 1 for d in range(4, 10)]:
+                    bboxes.append([0., 0., i * width, i * height])
+            else:
+                bboxes.append([0., 0., 13. * width, 13. * height])
+
+    bboxes = torch.tensor(bboxes, dtype=torch.float64, device=device)
+    # anchors = [[0, 0, 3, 3],
+    #            [0, 0, 4, 3],
+    #            [0, 0, 5, 3],
+    #            [0, 0, 4, 4],
+    #            [0, 0, 5, 4],
+    #            [0, 0, 5, 5],
+    #            [0, 0, 6, 5],
+    #            [0, 0, 10, 5],
+    #            [0, 0, 13, 5]]
+    anchors = torch.tensor(([0., 0., init[0], init[1]] * np.random.random((k, 4))).astype(dtype=np.float64), device=device)
+    # anchors = torch.tensor(anchors, dtype=torch.float64, device=device)
+
+    for _ in range(max_iter):
+        ious = jaccard(bboxes, anchors)
+        iou_max, idx = torch.max(ious, dim=1)
+        for i in range(k):
+            if weighted:
+                weights = (torch.tensor([1.], device=device) - iou_max[idx == i, None]) ** 10
+                anchors[i] = torch.sum(bboxes[idx == i] * weights, dim=0) / torch.sum(weights)  # Weighted k-means
+
+            else:
+                anchors[i] = torch.mean(bboxes[idx == i], dim=0)  # Normal k-means
+
+        sort = torch.argsort(anchors[:, 2], dim=0)
+        anchors = anchors[sort]
+
+    return anchors[:, 2:]
+
+
+def draw_vector_bboxes(device='cuda'):
+    # colors = plt.cm.get_cmap('tab20').colors
+    colors = create_pascal_label_colormap(3)
+
+    model = YOLO(name='YOLOv2',
+                 model='models/yolov2-ss.cfg',
                  device=device)
-    dataset = PascalDatasetYOLO(root_dir=['../../../Data/VOCdevkit/VOC2007/',
-                                          '../../../Data/VOCdevkit/VOC2012/'],
-                                class_file='../../../Data/VOCdevkit/voc.names',
-                                dataset=['trainval',
-                                         'trainval'],
-                                batch_size=32,
-                                image_size=model.default_image_size,
-                                anchors=model.anchors,
-                                strides=model.strides,
-                                skip_difficult=False,
-                                do_transforms=True,
-                                multi_scale=model.multi_scale
-                                )
-    show_ground_truth(model,
-                      dataset,
-                      show=True,
-                      export=False)
+
+    model = pickle.load(open('YOLOv2_120.pkl', 'rb'))
+
+    data = PascalDatasetYOLO(root_dir='../../../Data/SS/',
+                             class_file='../../../Data/SS/ss.names',
+                             dataset='test',
+                             batch_size=model.batch_size // model.subdivisions,
+                             image_size=model.default_image_size,
+                             anchors=model.anchors,
+                             strides=model.strides,
+                             do_transforms=False,
+                             multi_scale=False,
+                             return_targets=False
+                             )
+
+    bboxes, classes, confidence, image_idx = model.predict(dataset=data,
+                                                           confidence_threshold=.5,
+                                                           overlap_threshold=.45,
+                                                           show=False,
+                                                           export=False
+                                                           )
+
+    for idx in np.unique(image_idx):
+        image = Image.open(os.path.join(data.root_dir[0], 'JPEGImages', idx + '.jpg'))
+        image = image.resize(model.default_image_size)
+        image = gizeh.ImagePattern(np.array(image))
+        image = gizeh.rectangle(2*model.default_image_size[0],
+                                2*model.default_image_size[1],
+                                xy=(0, 0),
+                                fill=image)
+        pdf = gizeh.PDFSurface('detections/{}.pdf'.format(idx),
+                               model.default_image_size[0],
+                               model.default_image_size[1])
+        image.draw(pdf)
+        mask = np.array(image_idx) == idx
+        _bboxes = bboxes[mask]
+        _classes = classes[mask]
+        _confidence = confidence[mask]
+        argsort_x = torch.argsort(_bboxes[:, 0])
+        argsort_y = torch.argsort(_bboxes[argsort_x][:, 1])
+        _bboxes = _bboxes[argsort_x][argsort_y]
+        _classes = _classes[argsort_x][argsort_y]
+        _confidence = _confidence[argsort_x][argsort_y]
+        for bb, cl, co in zip(_bboxes, _classes, _confidence):
+            rect = [[int(bb[0]), int(bb[1])],
+                    [int(bb[2]), int(bb[1])],
+                    [int(bb[2]), int(bb[3])],
+                    [int(bb[0]), int(bb[3])]]
+            rect = gizeh.polyline(rect, close_path=True, stroke_width=4, stroke=colors[cl])
+            rect.draw(pdf)
+        for bb, cl, co in zip(_bboxes, _classes, _confidence):
+            w, h = len(data.classes[cl]) * 8.5 + 65, 15
+            rect = gizeh.rectangle(w,
+                                   h,
+                                   xy=(int(bb[0] + w / 2 - 2),
+                                       int(bb[1] - h / 2 + 7)),
+                                   fill=(1, 1, 1, 0.5))
+
+            rect.draw(pdf)
+            txt = gizeh.text('{}: {:.2f}'.format(data.classes[cl], co),
+                             'monospace',
+                             fontsize=16,
+                             xy=(int(bb[0]),
+                                 int(bb[1])),  # - 12),
+                             fill=(0., 0., 0.),
+                             v_align='center',
+                             h_align='left')
+            txt.draw(pdf)
+        pdf.flush()
+        pdf.finish()
+
+
+def create_pascal_label_colormap(num_classes=21):
+    """
+    Creates a label colormap used in PASCAL VOC segmentation benchmark.
+    Returns
+
+    A colormap for visualizing segmentation results.
+    """
+    def bit_get(val, idx):
+        """
+        Gets the bit value.
+        Parameters
+        ----------
+        val: int or numpy int array
+            Input value.
+        idx:
+            Which bit of the input val.
+        Returns
+        -------
+        The "idx"-th bit of input val.
+        """
+        return (val >> idx) & 1
+
+    colormap = np.zeros((256, 3), dtype=int)
+    ind = np.arange(256, dtype=int)
+
+    for shift in reversed(range(8)):
+        for channel in range(3):
+            colormap[:, channel] |= bit_get(ind, channel) << shift
+        ind >>= 3
+
+    return colormap[:num_classes] / 255.
+
+
+def main():
+    # set_random_seed(0)
+    # device = 'cpu'
+    # model = YOLO(name='YOLOv3',
+    #              model='models/yolov3-voc.cfg',
+    #              device=device)
+    # dataset = PascalDatasetYOLO(root_dir=['../../../Data/VOCdevkit/VOC2007/',
+    #                                       '../../../Data/VOCdevkit/VOC2012/'],
+    #                             class_file='../../../Data/VOCdevkit/voc.names',
+    #                             dataset=['trainval',
+    #                                      'trainval'],
+    #                             batch_size=32,
+    #                             image_size=model.default_image_size,
+    #                             anchors=model.anchors,
+    #                             strides=model.strides,
+    #                             skip_difficult=False,
+    #                             do_transforms=True,
+    #                             multi_scale=model.multi_scale
+    #                             )
+    # show_ground_truth(model,
+    #                   dataset,
+    #                   show=True,
+    #                   export=False)
+
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+    classes = read_classes('../../../Data/AMC/amc.names')
+    a = find_best_anchors(classes,
+                          k=5,
+                          max_iter=100,
+                          root_dir=['../../../Data/AMC', '../../../Data/AMC'],
+                          dataset=['train', 'test'],
+                          skip_truncated=False,
+                          weighted=False,
+                          multi_scale=False,
+                          init=(8., 5.),
+                          device=device)
+
+    for x, y in a:
+        print('{:.2f},{:.2f}, '.format(x, y), end='')
+        # print('[{:.0f},{:.0f}],\n'.format(x / 13. * 512., y / 13. * 512.), end='')
+
+    # draw_vector_bboxes()
+    # model = YOLO(name='YOLOv2',
+    #              model='models/yolov2-ss.cfg',
+    #              device='cuda')
+    # dataset = PascalDatasetYOLO(root_dir=['../../../Data/SS/'],
+    #                             class_file='../../../Data/SS/ss.names',
+    #                             dataset=['train'],
+    #                             batch_size=32,
+    #                             image_size=model.default_image_size,
+    #                             anchors=model.anchors,
+    #                             strides=model.strides,
+    #                             skip_difficult=False,
+    #                             do_transforms=False,
+    #                             multi_scale=model.multi_scale
+    #                             )
+    # show_ground_truth(model, dataset)
 
 
 if __name__ == '__main__':

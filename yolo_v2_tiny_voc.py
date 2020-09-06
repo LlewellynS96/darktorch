@@ -63,7 +63,7 @@ if __name__ == '__main__':
     if train:
         set_random_seed(12345)
 
-        model.unfreeze()
+        model.mini_freeze()
         optimizer = optim.SGD(model.get_trainable_parameters(),
                               lr=model.lr,
                               momentum=model.momentum,
@@ -84,9 +84,11 @@ if __name__ == '__main__':
     if predict:
         set_random_seed(12345)
 
-        model.predict(dataset=test_data,
-                      confidence_threshold=.001,
-                      overlap_threshold=.45,
-                      show=False,
-                      export=True
-                      )
+        model.load_weights('models/yolov2-tiny-voc.weights')
+
+        predictions = model.predict(dataset=test_data,
+                                    confidence_threshold=.5,
+                                    overlap_threshold=.45,
+                                    show=False,
+                                    export=False
+                                    )

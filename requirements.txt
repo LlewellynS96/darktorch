@@ -6,3 +6,4 @@ torchvision
 torchsummary==1.5.1
 Pillow==6.1.0
 tqdm==4.35.0
+gizeh
