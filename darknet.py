@@ -7,10 +7,6 @@ from tqdm import tqdm
 from utils import jaccard, xywh2xyxy, non_maximum_suppression, to_numpy_image, add_bbox_to_image, export_prediction
 from layers import *
 
-from conv import ComplexConv2d, ComplexToRealConv2d
-from bn import ComplexBatchNorm2d
-from pool import ComplexMaxPool2d
-from activations import ModReLu
 
 LAMBDA_COORD = 5.
 LAMBDA_OBJ = 1.
@@ -923,11 +919,3 @@ class YOLO(nn.Module):
                 trainable_parameters.append(param)
 
         return trainable_parameters
-
-    def make_complex(self):
-        self.layers[0][0] = ComplexConv2d(1, 16, 3, 1, 1, 1, False)
-        self.layers[0][1] = ComplexBatchNorm2d(16)
-        self.layers[0][2] = ModReLu(16)
-        self.layers[1][0] = ComplexMaxPool2d(2, 2)
-        self.layers[2][0] = ComplexToRealConv2d(16, 32, 3, 1, 1, 1, False)
-
