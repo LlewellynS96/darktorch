@@ -5,6 +5,7 @@ import torch
 import numpy as np
 import scipy.signal
 import matplotlib.pyplot as plt
+from matplotlib import cm
 from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
 from PIL import Image
@@ -15,7 +16,7 @@ from dataset import PascalDatasetYOLO
 
 USE_LETTERBOX = False
 IOU_MATCH_THRESHOLD = 0.05
-SMALL_THRESHOLD = 0.005
+SMALL_THRESHOLD = 0.0005
 MULTI_SCALE_FREQ = 10
 
 
@@ -262,132 +263,79 @@ class SSDatasetYOLO(Dataset):
 
 def show_ground_truth(model,
                       dataset,
+                      idx,
                       device='cpu',
                       classes='../../../Data/SS/ss.names',
-                      overlap_threshold=0.5,
-                      show=True,
-                      export=True,
-                      num_workers=0):
+                      overlap_threshold=1.,
+                      black=False,
+                      clean=False):
 
     lst_classes = read_classes(classes)
     colors = create_pascal_label_colormap(len(lst_classes))
 
-    dataset.n = 5
+    data = dataset[idx]
+    images, image_info, targets = data
+    model.set_image_size(images.shape[-2:])
+    images = images[None]
+    image_info = {k: [v] for k, v in image_info.items()}
+    image_info['padding'] = list(map(lambda x: [x], image_info['padding'][0]))
+    image_info['scale'] = list(map(lambda x: [x], image_info['scale'][0]))
+    targets = [t[None].to(device) for t in targets]
+    bboxes, classes, confidences, image_idx = model.process_bboxes(targets,
+                                                                   image_info,
+                                                                   1e-5,
+                                                                   overlap_threshold,
+                                                                   nms=False)
 
-    dataloader = DataLoader(dataset=dataset,
-                            batch_size=dataset.batch_size,
-                            num_workers=num_workers)
+    for i, data in enumerate(zip(image_info['id'], images)):
+        idx, image = data
+        image = Image.open(os.path.join(dataset.root_dir[0], 'JPEGImages', image_info['id'][0] + '.jpg'))
+        if black:
+            for images, images_info, targets in dataset:
+                if images_info['id'] == image_info['id'][0]:
+                    image = Image.fromarray(np.uint8(cm.binary_r(images[0].numpy()) * 255))
+                    break
+        image = image.resize(model.default_image_size)
+        image = gizeh.ImagePattern(np.array(image))
+        image = gizeh.rectangle(2. * model.default_image_size[0],
+                                2. * model.default_image_size[1],
+                                xy=(0, 0),
+                                fill=image)
+        pdf = gizeh.PDFSurface('detections/yolo_gt_{}.pdf'.format(idx),
+                               model.default_image_size[0],
+                               model.default_image_size[1])
+        image.draw(pdf)
+        mask = np.array(image_idx) == idx
+        if not clean:
+            for bb, cl, co in zip(bboxes[mask], classes[mask], confidences[mask]):
+                rect = [[int(bb[0]), int(bb[1])],
+                        [int(bb[2]), int(bb[1])],
+                        [int(bb[2]), int(bb[3])],
+                        [int(bb[0]), int(bb[3])]]
+                rect = gizeh.polyline(rect, close_path=True, stroke_width=4, stroke=colors[cl])
+                rect.draw(pdf)
+            for bb, cl, co in zip(bboxes[mask], classes[mask], confidences[mask]):
+                w, h = len(dataset.classes[cl]) * 8.5 + 8, 15
+                rect = gizeh.rectangle(w,
+                                       h,
+                                       xy=(int(bb[0] + w / 2 - 2),
+                                           max((int(bb[1] - h / 2 + 7)), 7)),  # - 2)),
+                                       # fill=colors[cl])
+                                       fill=(1, 1, 1, 0.5))
 
-    image_idx_ = []
-    bboxes_ = []
-    confidence_ = []
-    classes_ = []
-
-    with tqdm(total=len(dataloader),
-              desc='Exporting',
-              leave=True) as pbar:
-        for data in dataloader:
-            images, image_info, targets = data
-            model.set_image_size(images.shape[-2:])
-            width, height = model.image_size
-            targets = [t.to(device) for t in targets]
-            bboxes, classes, confidences, image_idx = model.process_bboxes(targets,
-                                                                           image_info,
-                                                                           1e-5,
-                                                                           overlap_threshold,
-                                                                           nms=False)
-
-            if show:
-                for i, data in enumerate(zip(image_info['id'], images)):
-                    idx, image = data
-                    if image.shape[0] == 3:
-                        image = to_numpy_image(image, size=(width, height))
-                    else:
-                        mu = dataset.mu[0]
-                        sigma = dataset.sigma[0]
-                        image = to_numpy_image(image[0], size=(width, height), mu=mu, sigma=sigma, normalised=False)
-                    image = gizeh.ImagePattern(np.array(image))
-                    image = gizeh.rectangle(2. * model.default_image_size[0],
-                                            2. * model.default_image_size[1],
-                                            xy=(0, 0),
-                                            fill=image)
-                    pdf = gizeh.PDFSurface('detections/{}.pdf'.format(idx),
-                                           2. * model.default_image_size[0],
-                                           2. * model.default_image_size[1])
-                    image.draw(pdf)
-                    mask = np.array(image_idx) == idx
-                    for bb, cl, co in zip(bboxes[mask], classes[mask], confidences[mask]):
-                        rect = [[int(bb[0]), int(bb[1])],
-                                [int(bb[2]), int(bb[1])],
-                                [int(bb[2]), int(bb[3])],
-                                [int(bb[0]), int(bb[3])]]
-                        rect = gizeh.polyline(rect, close_path=True, stroke_width=4, stroke=colors[cl])
-                        rect.draw(pdf)
-                    for bb, cl, co in zip(bboxes[mask], classes[mask], confidences[mask]):
-                        w, h = len(lst_classes[cl]) * 7.8, 11
-                        rect = gizeh.rectangle(w,
-                                               h,
-                                               xy=(int(bb[0] + w / 2 - 2),
-                                                   max((int(bb[1] - h / 2 + 5)), 5)),  # - 2)),
-                                               # fill=colors[cl])
-                                               fill=(1, 1, 1, 0.5))
-
-                        rect.draw(pdf)
-                        txt = gizeh.text(lst_classes[cl],
-                                         # 'Helvetica',
-                                         'monospace',
-                                         fontsize=12,
-                                         xy=(int(bb[0]),
-                                             max((int(bb[1]), 5))),  # - 12),
-                                         fill=(0., 0., 0.),
-                                         v_align='center',  # 'bottom',
-                                         h_align='left')
-                        txt.draw(pdf)
-                    pdf.flush()
-                    pdf.finish()
-
-            if export:
-                for idx in range(len(images)):
-                    mask = [True if idx_ == image_info['id'][idx] else False for idx_ in image_idx]
-                    for bbox, cls, confidence in zip(bboxes[mask], classes[mask], confidences[mask]):
-                        name = dataset.classes[cls]
-                        ids = image_info['id'][idx]
-                        set_name = image_info['dataset'][idx]
-                        confidence = confidence.item()
-                        bbox[::2] -= image_info['padding'][0][idx]
-                        bbox[1::2] -= image_info['padding'][1][idx]
-                        bbox[::2] /= image_info['scale'][0][idx]
-                        bbox[1::2] /= image_info['scale'][1][idx]
-                        x1, y1, x2, y2 = bbox.detach().cpu().numpy()
-                        export_prediction(cls=name,
-                                          prefix=model.name,
-                                          image_id=ids,
-                                          left=x1,
-                                          top=y1,
-                                          right=x2,
-                                          bottom=y2,
-                                          confidence=confidence,
-                                          set_name=set_name)
-
-            bboxes_.append(bboxes)
-            confidence_.append(confidences)
-            classes_.append(classes)
-            image_idx_.append(image_idx)
-
-            pbar.update()
-
-    if len(bboxes_) > 0:
-        bboxes = torch.cat(bboxes_).view(-1, 4)
-        classes = torch.cat(classes_).flatten()
-        confidence = torch.cat(confidence_).flatten()
-        image_idx = [item for sublist in image_idx_ for item in sublist]
-
-        return bboxes, classes, confidence, image_idx
-    else:
-        return torch.tensor([], device=device), \
-               torch.tensor([], device=device), \
-               torch.tensor([], device=device), \
-               []
+                rect.draw(pdf)
+                txt = gizeh.text(lst_classes[cl],
+                                 # 'Helvetica',
+                                 'monospace',
+                                 fontsize=16,
+                                 xy=(int(bb[0]),
+                                     max((int(bb[1]), 10))),  # - 12),
+                                 fill=(0., 0., 0.),
+                                 v_align='center',  # 'bottom',
+                                 h_align='left')
+                txt.draw(pdf)
+        pdf.flush()
+        pdf.finish()
 
 
 def find_best_anchors(classes, root_dir, dataset, k=5, max_iter=20, skip_truncated=True, init=(13, 13), weighted=True, multi_scale=False, device='cuda'):
@@ -453,30 +401,12 @@ def find_best_anchors(classes, root_dir, dataset, k=5, max_iter=20, skip_truncat
     return anchors[:, 2:]
 
 
-def draw_vector_bboxes(device='cuda'):
+def draw_vector_bboxes(model, data, black=False):
     # colors = plt.cm.get_cmap('tab20').colors
     colors = create_pascal_label_colormap(3)
 
-    model = YOLO(name='YOLOv2',
-                 model='models/yolov2-ss.cfg',
-                 device=device)
-
-    model = pickle.load(open('YOLOv2_120.pkl', 'rb'))
-
-    data = PascalDatasetYOLO(root_dir='../../../Data/SS/',
-                             class_file='../../../Data/SS/ss.names',
-                             dataset='test',
-                             batch_size=model.batch_size // model.subdivisions,
-                             image_size=model.default_image_size,
-                             anchors=model.anchors,
-                             strides=model.strides,
-                             do_transforms=False,
-                             multi_scale=False,
-                             return_targets=False
-                             )
-
     bboxes, classes, confidence, image_idx = model.predict(dataset=data,
-                                                           confidence_threshold=.5,
+                                                           confidence_threshold=.6,
                                                            overlap_threshold=.45,
                                                            show=False,
                                                            export=False
@@ -484,13 +414,25 @@ def draw_vector_bboxes(device='cuda'):
 
     for idx in np.unique(image_idx):
         image = Image.open(os.path.join(data.root_dir[0], 'JPEGImages', idx + '.jpg'))
+        if black:
+            d = np.load(os.path.join(os.path.join(data.root_dir[0], 'Raw', idx + '.npz')))
+            signal = d['signal']
+            samp_rate = d['samp_rate']
+            N_fft = d['N_fft']
+            N_overlap = d['N_overlap']
+            signal = signal[0] + 1.j * signal[1]
+            st, _, _ = SSDatasetYOLO.stft(signal,
+                            N_fft=N_fft,
+                            N_overlap=N_overlap,
+                            samp_rate=samp_rate)
+            image = Image.fromarray(np.uint8(cm.binary_r(np.abs(st)) * 255))
         image = image.resize(model.default_image_size)
         image = gizeh.ImagePattern(np.array(image))
         image = gizeh.rectangle(2*model.default_image_size[0],
                                 2*model.default_image_size[1],
                                 xy=(0, 0),
                                 fill=image)
-        pdf = gizeh.PDFSurface('detections/{}.pdf'.format(idx),
+        pdf = gizeh.PDFSurface('detections/yolo_{}.pdf'.format(idx),
                                model.default_image_size[0],
                                model.default_image_size[1])
         image.draw(pdf)
@@ -562,52 +504,73 @@ def create_pascal_label_colormap(num_classes=21):
             colormap[:, channel] |= bit_get(ind, channel) << shift
         ind >>= 3
 
-    return colormap[:num_classes] / 255.
+    return colormap[1:num_classes+1] / 255.
 
 
 def main():
-    # set_random_seed(0)
-    # device = 'cpu'
-    # model = YOLO(name='YOLOv3',
-    #              model='models/yolov3-voc.cfg',
-    #              device=device)
-    # dataset = PascalDatasetYOLO(root_dir=['../../../Data/VOCdevkit/VOC2007/',
-    #                                       '../../../Data/VOCdevkit/VOC2012/'],
-    #                             class_file='../../../Data/VOCdevkit/voc.names',
-    #                             dataset=['trainval',
-    #                                      'trainval'],
-    #                             batch_size=32,
-    #                             image_size=model.default_image_size,
-    #                             anchors=model.anchors,
-    #                             strides=model.strides,
-    #                             skip_difficult=False,
-    #                             do_transforms=True,
-    #                             multi_scale=model.multi_scale
-    #                             )
+    set_random_seed(0)
+    device = 'cpu'
+    model = YOLO(name='YOLOv2',
+                 model='models/yolov2-ss.cfg',
+                 device=device)
+    dataset = PascalDatasetYOLO(root_dir=['../../../Data/SS/'],
+                                class_file='../../../Data/SS/ss.names',
+                                dataset=['test'],
+                                batch_size=32,
+                                image_size=model.default_image_size,
+                                anchors=model.anchors,
+                                strides=model.strides,
+                                skip_difficult=False,
+                                do_transforms=False,
+                                multi_scale=model.multi_scale,
+                                return_targets=False
+                                )
+    # dataset.n = 4
+    # dataset.images = dataset.images[:dataset.n]
+    # dataset = SSDatasetYOLO( root_dir='../../../Data/SS/',
+    #                          class_file='../../../Data/SS/ss.names',
+    #                          anchors=model.anchors,
+    #                          dataset='test',
+    #                          skip_truncated=False,
+    #                          skip_difficult=False,
+    #                          mu=[0.141],
+    #                          sigma=[0.469],
+    #                          mode='stft',
+    #                          return_targets=True
+    #                          )
+    # dataset.images = [d for i, d in enumerate(dataset.images) if i in [2, 6, 9, 12, 14, 21, 23, 31]]
+    dataset.images = [d for i, d in enumerate(dataset.images) if i < 20]
+    dataset.n = len(dataset.images)
+
+    model = pickle.load(open('YOLOv2_120.pkl', 'rb'))
+
+    draw_vector_bboxes(model, dataset)
+
     # show_ground_truth(model,
     #                   dataset,
-    #                   show=True,
-    #                   export=False)
+    #                   0,
+    #                   classes='../../../Data/SS/ss.names',
+    #                   black=True,
+    #                   clean=False)
 
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    # device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    #
+    # classes = read_classes('../../../Data/AMC/amc.names')
+    # a = find_best_anchors(classes,
+    #                       k=5,
+    #                       max_iter=100,
+    #                       root_dir=['../../../Data/AMC', '../../../Data/AMC'],
+    #                       dataset=['train', 'test'],
+    #                       skip_truncated=False,
+    #                       weighted=False,
+    #                       multi_scale=False,
+    #                       init=(8., 5.),
+    #                       device=device)
+    #
+    # for x, y in a:
+    #     print('{:.2f},{:.2f}, '.format(x, y), end='')
+    #     # print('[{:.0f},{:.0f}],\n'.format(x / 13. * 512., y / 13. * 512.), end='')
 
-    classes = read_classes('../../../Data/AMC/amc.names')
-    a = find_best_anchors(classes,
-                          k=5,
-                          max_iter=100,
-                          root_dir=['../../../Data/AMC', '../../../Data/AMC'],
-                          dataset=['train', 'test'],
-                          skip_truncated=False,
-                          weighted=False,
-                          multi_scale=False,
-                          init=(8., 5.),
-                          device=device)
-
-    for x, y in a:
-        print('{:.2f},{:.2f}, '.format(x, y), end='')
-        # print('[{:.0f},{:.0f}],\n'.format(x / 13. * 512., y / 13. * 512.), end='')
-
-    # draw_vector_bboxes()
     # model = YOLO(name='YOLOv2',
     #              model='models/yolov2-ss.cfg',
     #              device='cuda')

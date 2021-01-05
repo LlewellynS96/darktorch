@@ -22,10 +22,9 @@ if __name__ == '__main__':
     freeze = False
     predict = True
 
-    model = YOLO(name='YOLOv3',
+    model = YOLO(name='YOLOv2',
                        # model='models/yolov2-tiny-voc.cfg',
-                       # model='models/yolov2-voc.cfg',
-                       model='models/yolov3.cfg',
+                       model='models/yolov2-voc.cfg',
                        device=device)
 
     # torchsummary.summary(model, (model.channels, *model.default_image_size), device=device)
@@ -105,7 +104,7 @@ if __name__ == '__main__':
     #                           return_targets=False
     #                           )
 
-    model.load_weights('models/yolov3.weights')
+    # model.load_weights('models/yolov3.weights')
     # model.load_weights('models/yolov2-voc.weights')
     # model.load_weights('models/darknet.weights', only_imagenet=True)
     # model.load_weights('models/yolov2-tiny.conv.13', only_imagenet=True)
@@ -148,10 +147,10 @@ if __name__ == '__main__':
         set_random_seed(12345)
 
         # model.set_input_dims(1)
-        # model = pickle.load(open('YOLOv2-tiny_ss_120.pkl', 'rb'))
+        model = pickle.load(open('YOLOv2_120.pkl', 'rb'))
 
         model.predict(dataset=test_data,
-                      confidence_threshold=.3,
+                      confidence_threshold=.5,
                       overlap_threshold=.45,
                       show=True,
                       export=False

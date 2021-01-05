@@ -197,7 +197,6 @@ def voc_eval(detpath, annopath, imagesetfile, classname, ovthresh=0.5, use_07_me
     return rec, prec, ap
 
 
-
 if __name__ == '__main__':
     cls = ['aeroplane', 'bicycle', 'bird', 'boat', 'bottle', 'bus', 'car', 'cat',
            'chair', 'cow', 'diningtable', 'dog', 'horse', 'motorbike', 'person',
@@ -236,3 +235,4 @@ if __name__ == '__main__':
                 pad_inches=0)
 
     print(np.mean(mean_ap))
+
